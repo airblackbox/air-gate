@@ -1,0 +1,47 @@
+# AIR Blackbox Gate — Policy Configuration
+#
+# Rules are evaluated in order. First match wins.
+# If no rule matches, the default policy applies.
+
+policy:
+  default: require_approval  # safest default: humans approve everything
+
+  rules:
+    # ── Safe actions: auto-allow ──────────────────────────────
+    - name: allow-read-only
+      action_type: db_read
+      decision: auto_allow
+      description: Read-only queries are safe to auto-approve
+
+    - name: allow-search
+      action_type: search
+      decision: auto_allow
+      description: Search operations don't modify data
+
+    # ── Dangerous actions: always block ───────────────────────
+    - name: block-delete
+      action_type: db_delete
+      decision: block
+      description: AI should never delete data autonomously
+
+    - name: block-admin
+      action_type: admin
+      decision: block
+      description: Administrative actions require manual execution
+
+    # ── Everything else: require human approval ───────────────
+    - name: approve-emails
+      action_type: email
+      decision: require_approval
+      max_per_hour: 50
+      description: All outbound emails need human approval
+
+    - name: approve-api-calls
+      action_type: api_call
+      decision: require_approval
+      description: External API calls need human approval
+
+    - name: approve-writes
+      action_type: db_write
+      decision: require_approval
+      description: Database writes need human approval
