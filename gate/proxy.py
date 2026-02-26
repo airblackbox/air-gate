@@ -24,6 +24,9 @@ import logging
 import os
 from typing import Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import yaml
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
