@@ -1,0 +1,69 @@
+# AIR Blackbox — Full Observability Stack
+# Usage: docker compose up
+#
+# Services:
+#   gate     — The AI Action Firewall (FastAPI)  → http://localhost:8000
+#   jaeger   — Distributed tracing UI            → http://localhost:16686
+#   dashboard — Audit trail viewer (read-only)   → http://localhost:3000
+#
+# Volumes:
+#   gate-data — Persistent SQLite audit database
+
+services:
+
+  # ── Gate: The AI Action Firewall ───────────────────────────────
+  gate:
+    build: .
+    container_name: air-blackbox-gate
+    ports:
+      - "8000:8000"
+    environment:
+      - GATE_SIGNING_KEY=${GATE_SIGNING_KEY:-demo-key-change-in-production}
+      - GATE_STORAGE_PATH=/data/gate_events.db
+      - GATE_CONFIG_PATH=gate_config.yaml
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_SERVICE_NAME=air-blackbox-gate
+    volumes:
+      - gate-data:/data
+      - ./gate_config.yaml:/app/gate_config.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  # ── Jaeger: Distributed Tracing ────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: air-blackbox-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
+
+  # ── Dashboard: Audit Trail Viewer ──────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: air-blackbox-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - GATE_URL=http://gate:8000
+    depends_on:
+      gate:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  gate-data:
+    driver: local

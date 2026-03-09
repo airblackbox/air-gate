@@ -1,0 +1,14 @@
+.git
+.env
+__pycache__
+*.pyc
+.pytest_cache
+dist/
+build/
+*.egg-info/
+gate_events.jsonl
+gate_events.db
+.venv/
+tests/
+demo.py
+scripts/

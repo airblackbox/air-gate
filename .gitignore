@@ -2,7 +2,9 @@ __pycache__/
 *.pyc
 .env
 gate_events.jsonl
+gate_events.db
 *.egg-info/
 dist/
 build/
 .venv/
+*.db

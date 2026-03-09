@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIR Blackbox — Audit Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0a0a0b; --card: #111113; --border: #27272a;
+    --text: #fafafa; --muted: #a1a1aa; --dim: #71717a;
+    --orange: #f97316; --green: #22c55e; --red: #ef4444;
+    --yellow: #eab308; --blue: #3b82f6;
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+  .header { padding: 20px 32px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 20px; font-weight: 800; }
+  .header h1 span { color: var(--orange); }
+  .header .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .header .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .header .dot.ok { background: var(--green); }
+  .header .dot.err { background: var(--red); }
+
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; padding: 24px 32px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .stat .label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .stat .value { font-size: 28px; font-weight: 800; }
+  .stat .value.green { color: var(--green); }
+  .stat .value.red { color: var(--red); }
+  .stat .value.yellow { color: var(--yellow); }
+  .stat .value.blue { color: var(--blue); }
+
+  .chain-bar { margin: 0 32px; padding: 14px 20px; border-radius: 10px; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .chain-bar.valid { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); color: var(--green); }
+  .chain-bar.invalid { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); color: var(--red); }
+
+  .events-section { padding: 24px 32px; }
+  .events-section h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+  .badge.approved, .badge.auto_allowed { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge.blocked { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge.pending { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .badge.rejected { background: rgba(239,68,68,0.15); color: var(--red); }
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+  .refresh-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .refresh-btn:hover { background: var(--border); color: var(--text); }
+  .empty { text-align: center; padding: 60px; color: var(--dim); }
+  .empty code { background: rgba(249,115,22,0.1); padding: 2px 8px; border-radius: 4px; color: var(--orange); font-family: monospace; }
+
+  @media (max-width: 768px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .header { flex-direction: column; gap: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>AIR <span>Blackbox</span> Dashboard</h1>
+  <div style="display:flex;gap:12px;align-items:center;">
+    <div class="status">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusText">Connecting...</span>
+    </div>
+    <button class="refresh-btn" onclick="loadAll()">Refresh</button>
+  </div>
+</div>
+
+<div class="stats" id="statsGrid">
+  <div class="stat"><div class="label">Total Events</div><div class="value" id="statTotal">—</div></div>
+  <div class="stat"><div class="label">Approved</div><div class="value green" id="statApproved">—</div></div>
+  <div class="stat"><div class="label">Blocked</div><div class="value red" id="statBlocked">—</div></div>
+  <div class="stat"><div class="label">Pending</div><div class="value yellow" id="statPending">—</div></div>
+  <div class="stat"><div class="label">Agents</div><div class="value blue" id="statAgents">—</div></div>
+</div>
+
+<div id="chainBar" class="chain-bar valid" style="display:none;"></div>
+
+<div class="events-section">
+  <h2>Event Log</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Agent</th>
+        <th>Action</th>
+        <th>Tool</th>
+        <th>Decision</th>
+        <th>Authorized By</th>
+        <th>Event ID</th>
+      </tr>
+    </thead>
+    <tbody id="eventsBody">
+      <tr><td colspan="7" class="empty">Loading events...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const API = '/api';
+let autoRefresh;
+
+async function loadAll() {
+  await Promise.all([loadHealth(), loadStats(), loadVerify(), loadEvents()]);
+}
+
+async function loadHealth() {
+  try {
+    const res = await fetch(`${API}/health`);
+    const data = await res.json();
+    document.getElementById('statusDot').className = 'dot ok';
+    document.getElementById('statusText').textContent = `Healthy · ${data.events_count} events`;
+  } catch {
+    document.getElementById('statusDot').className = 'dot err';
+    document.getElementById('statusText').textContent = 'Gate unavailable';
+  }
+}
+
+async function loadStats() {
+  try {
+    const res = await fetch(`${API}/stats`);
+    const data = await res.json();
+    document.getElementById('statTotal').textContent = data.total_events || 0;
+    document.getElementById('statApproved').textContent = (data.by_result?.approved || 0) + (data.by_result?.auto_allowed || 0);
+    document.getElementById('statBlocked').textContent = data.by_result?.blocked || 0;
+    document.getElementById('statPending').textContent = data.by_result?.pending || 0;
+    document.getElementById('statAgents').textContent = Object.keys(data.by_agent || {}).length;
+  } catch {}
+}
+
+async function loadVerify() {
+  try {
+    const res = await fetch(`${API}/verify`);
+    const data = await res.json();
+    const bar = document.getElementById('chainBar');
+    bar.style.display = 'flex';
+    if (data.valid) {
+      bar.className = 'chain-bar valid';
+      bar.innerHTML = `&#9745; HMAC-SHA256 chain verified — ${data.events_checked} events, zero tampering detected`;
+    } else {
+      bar.className = 'chain-bar invalid';
+      bar.innerHTML = `&#9888; Chain integrity FAILED at event ${data.break_at || 'unknown'} — possible tampering`;
+    }
+  } catch {}
+}
+
+async function loadEvents() {
+  try {
+    const res = await fetch(`${API}/events?limit=100`);
+    const data = await res.json();
+    const tbody = document.getElementById('eventsBody');
+
+    if (!data.events || data.events.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No events yet. Run <code>air-blackbox demo</code> or submit an action via the API.</td></tr>';
+      return;
+    }
+
+    // Reverse so newest first
+    const events = [...data.events].reverse();
+    tbody.innerHTML = events.map(e => {
+      const time = new Date(e.timestamp).toLocaleString();
+      const badge = `<span class="badge ${e.result}">${e.result}</span>`;
+      const shortId = (e.event_id || '').slice(0, 8);
+      return `<tr>
+        <td>${time}</td>
+        <td class="mono">${e.agent_id || '—'}</td>
+        <td>${e.action_type || '—'}</td>
+        <td class="mono">${e.tool_name || '—'}</td>
+        <td>${badge}</td>
+        <td>${e.authorized_by || '—'}</td>
+        <td class="mono" title="${e.event_id}">${shortId}…</td>
+      </tr>`;
+    }).join('');
+  } catch {
+    document.getElementById('eventsBody').innerHTML = '<tr><td colspan="7" class="empty">Could not load events</td></tr>';
+  }
+}
+
+// Initial load + auto-refresh every 10s
+loadAll();
+autoRefresh = setInterval(loadAll, 10000);
+</script>
+</body>
+</html>

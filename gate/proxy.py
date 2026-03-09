@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from .events import EventStore, GateEvent
 from .policy import PolicyEngine, PolicyRule
 from .slack_bot import SlackBot
+from .tracing import setup_tracing
 
 # ── Setup ────────────────────────────────────────────────────────────
 
@@ -54,6 +55,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize tracing (no-op if OTEL not installed)
+setup_tracing(app)
 
 # ── Config ───────────────────────────────────────────────────────────
 
