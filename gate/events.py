@@ -4,11 +4,16 @@ Tamper-evident signed event store using HMAC-SHA256 chains.
 Every agent action produces a signed event. Events are cryptographically
 chained so that any tampering (editing, deleting, reordering) is detectable.
 This is not a log file — it's legal evidence.
+
+Supports two storage backends:
+  - JSONL (default for backward compatibility): gate_events.jsonl
+  - SQLite (recommended): gate_events.db
 """
 
 import hashlib
 import hmac
 import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -50,18 +55,36 @@ class EventStore:
     Every event is signed with a secret key and chained to the previous event.
     If anyone tampers with any event, the chain breaks and verification fails.
 
-    For MVP, events live in memory + a JSONL file. PostgreSQL comes later.
+    Storage backends:
+      - SQLite (.db): Recommended. Zero-config, embedded, supports concurrent reads.
+      - JSONL (.jsonl): Simple append-only file. Good for debugging.
+
+    Backend is auto-detected from file extension, or set explicitly via backend param.
     """
 
-    def __init__(self, signing_key: str, storage_path: str = "gate_events.jsonl"):
+    def __init__(self, signing_key: str, storage_path: str = "gate_events.jsonl", backend: str = None):
         self.signing_key = signing_key.encode("utf-8")
         self.storage_path = storage_path
         self.events: list[GateEvent] = []
+
+        # Auto-detect backend from file extension
+        if backend:
+            self._backend = backend
+        elif storage_path.endswith(".db"):
+            self._backend = "sqlite"
+        else:
+            self._backend = "jsonl"
+
+        # Initialize storage
+        if self._backend == "sqlite":
+            self._init_sqlite()
+
         self._load_existing()
+
+    # ── HMAC Signing ────────────────────────────────────────────────
 
     def _compute_hmac(self, event: GateEvent) -> str:
         """Compute HMAC-SHA256 signature for an event."""
-        # Hash the important fields (not the signature itself)
         content = json.dumps(
             {
                 "event_id": event.event_id,
@@ -78,18 +101,17 @@ class EventStore:
         )
         return hmac.new(self.signing_key, content.encode("utf-8"), hashlib.sha256).hexdigest()
 
+    # ── Core Operations ─────────────────────────────────────────────
+
     def record(self, event: GateEvent) -> GateEvent:
         """Record an event, sign it, and chain it to the previous event."""
-        # Link to previous event
         if self.events:
             event.previous_hash = self.events[-1].hmac_signature
         else:
             event.previous_hash = "GENESIS"
 
-        # Sign this event
         event.hmac_signature = self._compute_hmac(event)
 
-        # Store
         self.events.append(event)
         self._persist(event)
 
@@ -102,7 +124,6 @@ class EventStore:
                 event.result = result
                 event.authorized_by = authorized_by
                 event.result_detail = detail
-                # Re-sign after update
                 event.hmac_signature = self._compute_hmac(event)
                 self._persist_all()
                 return event
@@ -116,14 +137,12 @@ class EventStore:
         errors = []
 
         for i, event in enumerate(self.events):
-            # Check HMAC signature
             expected_hmac = self._compute_hmac(event)
             if event.hmac_signature != expected_hmac:
                 errors.append(
                     f"Event {event.event_id}: signature mismatch (tampering detected)"
                 )
 
-            # Check chain link
             if i == 0:
                 if event.previous_hash != "GENESIS":
                     errors.append(
@@ -188,18 +207,101 @@ class EventStore:
             "chain_valid": self.verify_chain()["valid"],
         }
 
-    def _persist(self, event: GateEvent):
+    # ── SQLite Backend ──────────────────────────────────────────────
+
+    def _init_sqlite(self):
+        """Initialize SQLite database with the events table."""
+        conn = sqlite3.connect(self.storage_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT UNIQUE NOT NULL,
+                timestamp TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                authorized_by TEXT DEFAULT 'pending',
+                action_type TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                input_context TEXT DEFAULT '',
+                payload TEXT DEFAULT '{}',
+                result TEXT DEFAULT 'pending',
+                result_detail TEXT DEFAULT '',
+                previous_hash TEXT DEFAULT '',
+                hmac_signature TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_result ON events(result)")
+        conn.commit()
+        conn.close()
+
+    def _sqlite_persist(self, event: GateEvent):
+        """Insert a single event into SQLite."""
+        conn = sqlite3.connect(self.storage_path)
+        conn.execute(
+            """INSERT OR REPLACE INTO events
+               (event_id, timestamp, agent_id, authorized_by, action_type,
+                tool_name, input_context, payload, result, result_detail,
+                previous_hash, hmac_signature)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event.event_id, event.timestamp, event.agent_id,
+                event.authorized_by, event.action_type, event.tool_name,
+                event.input_context, json.dumps(event.payload),
+                event.result, event.result_detail,
+                event.previous_hash, event.hmac_signature,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    def _sqlite_persist_all(self):
+        """Rewrite all events to SQLite (used after updates that re-sign)."""
+        conn = sqlite3.connect(self.storage_path)
+        conn.execute("DELETE FROM events")
+        for event in self.events:
+            conn.execute(
+                """INSERT INTO events
+                   (event_id, timestamp, agent_id, authorized_by, action_type,
+                    tool_name, input_context, payload, result, result_detail,
+                    previous_hash, hmac_signature)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event.event_id, event.timestamp, event.agent_id,
+                    event.authorized_by, event.action_type, event.tool_name,
+                    event.input_context, json.dumps(event.payload),
+                    event.result, event.result_detail,
+                    event.previous_hash, event.hmac_signature,
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+    def _sqlite_load(self):
+        """Load all events from SQLite, ordered by sequence."""
+        conn = sqlite3.connect(self.storage_path)
+        cursor = conn.execute("SELECT * FROM events ORDER BY seq")
+        columns = [desc[0] for desc in cursor.description]
+        for row in cursor:
+            row_dict = dict(zip(columns, row))
+            row_dict["payload"] = json.loads(row_dict.get("payload", "{}"))
+            row_dict.pop("seq", None)
+            self.events.append(GateEvent(**row_dict))
+        conn.close()
+
+    # ── JSONL Backend ───────────────────────────────────────────────
+
+    def _jsonl_persist(self, event: GateEvent):
         """Append a single event to the JSONL file."""
         with open(self.storage_path, "a") as f:
             f.write(event.model_dump_json() + "\n")
 
-    def _persist_all(self):
+    def _jsonl_persist_all(self):
         """Rewrite the entire JSONL file (used after updates)."""
         with open(self.storage_path, "w") as f:
             for event in self.events:
                 f.write(event.model_dump_json() + "\n")
 
-    def _load_existing(self):
+    def _jsonl_load(self):
         """Load events from JSONL file on startup."""
         try:
             with open(self.storage_path, "r") as f:
@@ -208,4 +310,24 @@ class EventStore:
                     if line:
                         self.events.append(GateEvent.model_validate_json(line))
         except FileNotFoundError:
-            pass  # Fresh start
+            pass
+
+    # ── Backend Dispatch ────────────────────────────────────────────
+
+    def _persist(self, event: GateEvent):
+        if self._backend == "sqlite":
+            self._sqlite_persist(event)
+        else:
+            self._jsonl_persist(event)
+
+    def _persist_all(self):
+        if self._backend == "sqlite":
+            self._sqlite_persist_all()
+        else:
+            self._jsonl_persist_all()
+
+    def _load_existing(self):
+        if self._backend == "sqlite":
+            self._sqlite_load()
+        else:
+            self._jsonl_load()

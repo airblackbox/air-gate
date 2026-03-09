@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "air-blackbox"
+version = "0.2.0"
+description = "The AI Action Firewall — tamper-evident audit trails for AI agents. EU AI Act compliance infrastructure."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Jason Shotwell", email = "jason@airblackbox.ai" },
+]
+keywords = ["ai", "compliance", "eu-ai-act", "audit", "agents", "langchain", "openai", "safety"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "httpx>=0.25.0",
+    "pyyaml>=6.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+air-blackbox = "gate.cli:main"
+
+[project.urls]
+Homepage = "https://airblackbox.ai"
+Repository = "https://github.com/airblackbox/air-gate"
+Documentation = "https://airblackbox.ai/quickstart"
+Issues = "https://github.com/airblackbox/air-gate/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gate"]
+
+[tool.ruff]
+line-length = 120
+select = ["E", "F"]
+ignore = ["E501"]
