@@ -2,6 +2,10 @@
 
 **The AI Action Firewall** — Every agent action gated, signed, and auditable.
 
+<p align="center">
+  <img src="demo.gif" alt="AIR Gate demo" width="800">
+</p>
+
 Gate sits between your AI agents and the real world. Every action flows through Gate, gets checked against policy, PII is automatically redacted, and everything produces a tamper-evident signed record.
 
 ## What's New in v0.2.0
@@ -11,7 +15,6 @@ Gate sits between your AI agents and the real world. Every action flows through 
 - **Callback URLs** — Gate POSTs the decision back to your agent when a human approves/rejects in Slack.
 - **Framework Integrations** — Drop-in wrappers for LangChain tools and OpenAI function tools.
 - **Rebranded CLI** — `air-gate demo` and `air-gate verify` (was air-blackbox).
-
 ## How It Works
 
 ```
@@ -42,7 +45,6 @@ Auto-Allow  Slack   Block
 from gate import GateClient
 
 gate = GateClient()  # local mode, zero config
-
 result = gate.check("my-agent", "email", "send_email",
                     payload={"to": "jane@example.com"})
 
@@ -74,7 +76,6 @@ result = gate.check("my-agent", "email", "send_email",
 **LangChain:**
 ```python
 from gate.integrations.langchain import GatedTool
-
 gated_search = GatedTool(tool=my_search_tool, agent_id="research-agent")
 # Use gated_search in your agent chain — every call goes through Gate
 ```
@@ -106,8 +107,7 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 
-Key environment variables:
-- `GATE_SIGNING_KEY` — HMAC signing key (required for production)
+Key environment variables:- `GATE_SIGNING_KEY` — HMAC signing key (required for production)
 - `GATE_STORAGE_PATH` — Event storage file (default: `gate_events.jsonl`)
 - `GATE_PII_REDACTION` — Enable PII auto-redaction (default: `true`)
 - `GATE_PII_METHOD` — Redaction method: `hash_sha256`, `mask`, `remove`, `tokenise`
@@ -137,8 +137,7 @@ policy:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/actions` | POST | Submit an agent action |
-| `/actions/{id}/approve` | POST | Approve a pending action |
-| `/actions/{id}/reject` | POST | Reject a pending action |
+| `/actions/{id}/approve` | POST | Approve a pending action || `/actions/{id}/reject` | POST | Reject a pending action |
 | `/events` | GET | Query the event store |
 | `/events/{id}` | GET | Get a specific event |
 | `/verify` | GET | Verify audit chain integrity |
@@ -168,8 +167,7 @@ gate/
 ├── policy.py           — Policy engine (YAML rules)
 ├── pii.py              — PII detection + redaction (multi-vertical)
 ├── slack_bot.py        — Slack approval bot (Block Kit)
-├── report.py           — Compliance report generator
-├── report_endpoint.py  — /report API endpoint
+├── report.py           — Compliance report generator├── report_endpoint.py  — /report API endpoint
 ├── tracing.py          — OpenTelemetry integration
 ├── cli.py              — air-gate CLI
 └── integrations/
