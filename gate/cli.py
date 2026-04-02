@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-AIR Blackbox CLI — the single entry point for the AI Action Firewall.
+AIR Gate CLI — the single entry point for the AI Action Firewall.
 
 Usage:
-    air-blackbox demo          Run the interactive demo (no server needed)
-    air-blackbox demo --sqlite Use SQLite storage (default)
-    air-blackbox demo --jsonl  Use JSONL file storage
-    air-blackbox verify <path> Verify an audit chain file
-    air-blackbox version       Show version info
+    air-gate demo          Run the interactive demo (no server needed)
+    air-gate demo --sqlite Use SQLite storage (default)
+    air-gate demo --jsonl  Use JSONL file storage
+    air-gate verify <path> Verify an audit chain file
+    air-gate version       Show version info
 """
 
 import argparse
@@ -21,6 +21,8 @@ from .events import EventStore, GateEvent
 from .policy import PolicyEngine, PolicyRule
 
 __version__ = "0.2.0"
+
+# Back-compat: CLI was originally named air-blackbox in the gate repo
 
 # ─── Terminal Colors ───────────────────────────────────────────────
 # Works on macOS, Linux, and Windows Terminal / PowerShell 7+
@@ -61,7 +63,7 @@ def banner():
     print(f"""
 {ORANGE}{BOLD}    ╔══════════════════════════════════════════════════════════╗
     ║                                                          ║
-    ║   {WHITE}AIR BLACKBOX{ORANGE}  —  The AI Action Firewall               ║
+    ║   {WHITE}AIR GATE{ORANGE}  —  The AI Action Firewall                   ║
     ║                                                          ║
     ║   {RESET}{DIM}Tamper-evident audit trails for AI agents{RESET}{ORANGE}{BOLD}             ║
     ║   {RESET}{DIM}EU AI Act compliance infrastructure{RESET}{ORANGE}{BOLD}                   ║
@@ -309,7 +311,7 @@ def run_demo(storage="sqlite"):
     stats = store.get_stats()
     print(f"""
     {DIM}┌─────────────────────────────────────────────────────┐{RESET}
-    {DIM}│{RESET}  {BOLD}AIR Blackbox Audit Report{RESET}                           {DIM}│{RESET}
+    {DIM}│{RESET}  {BOLD}AIR Gate Audit Report{RESET}                               {DIM}│{RESET}
     {DIM}├─────────────────────────────────────────────────────┤{RESET}
     {DIM}│{RESET}                                                     {DIM}│{RESET}
     {DIM}│{RESET}  Total events:    {BOLD}{stats['total']}{RESET}                                {DIM}│{RESET}
@@ -331,18 +333,18 @@ def run_demo(storage="sqlite"):
 
     # ── What's Next ──
     print(f"  {BOLD}What just happened:{RESET}")
-    print(f"  Your AI agent ran 8 actions through AIR Blackbox.")
+    print(f"  Your AI agent ran 8 actions through AIR Gate.")
     print(f"  Every action was {BOLD}policy-checked{RESET}, {BOLD}signed with HMAC-SHA256{RESET},")
     print(f"  and {BOLD}chained{RESET} into a tamper-evident audit trail.")
     print()
     print(f"  {BOLD}Next steps:{RESET}")
-    print(f"  1. Add to your own agent:  {CYAN}from gate.events import EventStore{RESET}")
-    print(f"  2. Start the full server:  {CYAN}pip install air-blackbox[server]{RESET}")
+    print(f"  1. Add to your own agent:  {CYAN}from gate import GateClient{RESET}")
+    print(f"  2. Start the full server:  {CYAN}pip install air-gate[server]{RESET}")
     print(f"     Then:                   {CYAN}uvicorn gate.proxy:app --reload{RESET}")
-    print(f"  3. View docs:              {CYAN}https://airblackbox.ai/quickstart{RESET}")
+    print(f"  3. View docs:              {CYAN}https://airblackbox.ai/gate{RESET}")
     print()
     print(f"  {DIM}Audit trail saved to: {storage_path}{RESET}")
-    print(f"  {DIM}Run 'air-blackbox verify {storage_path}' to re-verify anytime.{RESET}")
+    print(f"  {DIM}Run 'air-gate verify {storage_path}' to re-verify anytime.{RESET}")
     print()
 
 
@@ -379,8 +381,8 @@ def run_verify(path):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="air-blackbox",
-        description="AIR Blackbox — The AI Action Firewall. Tamper-evident audit trails for AI agents.",
+        prog="air-gate",
+        description="AIR Gate — The AI Action Firewall. Tamper-evident audit trails for AI agents.",
     )
     subparsers = parser.add_subparsers(dest="command")
 

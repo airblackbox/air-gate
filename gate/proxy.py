@@ -24,6 +24,8 @@ import logging
 import os
 from typing import Optional
 
+import httpx
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -34,6 +36,7 @@ from pydantic import BaseModel, Field
 
 from .events import EventStore, GateEvent
 from .policy import PolicyEngine, PolicyRule
+from .pii import PIIRedactor, RedactionMethod
 from .slack_bot import SlackBot
 from .tracing import setup_tracing
 
@@ -64,10 +67,14 @@ setup_tracing(app)
 SIGNING_KEY = os.getenv("GATE_SIGNING_KEY", "change-me-in-production")
 STORAGE_PATH = os.getenv("GATE_STORAGE_PATH", "gate_events.jsonl")
 CONFIG_PATH = os.getenv("GATE_CONFIG_PATH", "gate_config.yaml")
+PII_REDACTION = os.getenv("GATE_PII_REDACTION", "true").lower() in ("true", "1", "yes")
+PII_METHOD = os.getenv("GATE_PII_METHOD", "hash_sha256")
+CALLBACK_TIMEOUT = int(os.getenv("GATE_CALLBACK_TIMEOUT", "300"))
 
 # Initialize components
 event_store = EventStore(signing_key=SIGNING_KEY, storage_path=STORAGE_PATH)
 slack_bot = SlackBot()
+pii_redactor = PIIRedactor(method=RedactionMethod(PII_METHOD)) if PII_REDACTION else None
 
 # Load policy from config file or use defaults
 def load_policy() -> PolicyEngine:
@@ -94,6 +101,7 @@ class ActionRequest(BaseModel):
     tool_name: str
     payload: dict = Field(default_factory=dict)
     input_context: str = ""  # what prompt led to this
+    callback_url: str = ""  # optional: Gate will POST the decision here when resolved
 
 
 class ActionResponse(BaseModel):
@@ -103,6 +111,7 @@ class ActionResponse(BaseModel):
     rule_name: str
     reason: str
     message: str
+    pii_redacted: int = 0  # number of PII fields redacted from payload
 
 
 class ApprovalRequest(BaseModel):
@@ -123,12 +132,21 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
     2. Check the policy
     3. Auto-allow, send to Slack for approval, or block
     """
+    # Redact PII from payload before it enters the audit chain
+    pii_count = 0
+    safe_payload = action.payload
+    if pii_redactor:
+        safe_payload, detections = pii_redactor.redact(action.payload)
+        pii_count = len(detections)
+        if pii_count > 0:
+            logger.info(f"PII REDACTED: {pii_count} field(s) in {action.agent_id} → {action.tool_name}")
+
     # Create the event
     event = GateEvent(
         agent_id=action.agent_id,
         action_type=action.action_type,
         tool_name=action.tool_name,
-        payload=action.payload,
+        payload=safe_payload,
         input_context=action.input_context,
     )
 
@@ -152,6 +170,7 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
             rule_name=decision["rule_name"],
             reason=decision["reason"],
             message="Action auto-approved by policy. Proceed.",
+            pii_redacted=pii_count,
         )
 
     elif decision["decision"] == "block":
@@ -167,6 +186,7 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
             rule_name=decision["rule_name"],
             reason=decision["reason"],
             message="Action blocked by policy. Cannot proceed.",
+            pii_redacted=pii_count,
         )
 
     else:  # require_approval
@@ -175,6 +195,7 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
         pending_actions[event.event_id] = {
             "event": event,
             "action": action,
+            "callback_url": action.callback_url,
         }
         logger.info(f"PENDING APPROVAL: {action.agent_id} → {action.tool_name}")
 
@@ -185,7 +206,7 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
             agent_id=action.agent_id,
             action_type=action.action_type,
             tool_name=action.tool_name,
-            payload=action.payload,
+            payload=safe_payload,
             input_context=action.input_context,
         )
 
@@ -195,11 +216,30 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
             rule_name=decision["rule_name"],
             reason=decision["reason"],
             message="Action requires human approval. Sent to Slack.",
+            pii_redacted=pii_count,
         )
 
 
+async def _fire_callback(event_id: str, result: str, authorized_by: str):
+    """Send decision to the agent's callback URL if one was provided."""
+    pending = pending_actions.get(event_id, {})
+    callback_url = pending.get("callback_url", "")
+    if not callback_url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(callback_url, json={
+                "event_id": event_id,
+                "result": result,
+                "authorized_by": authorized_by,
+            })
+        logger.info(f"CALLBACK SENT: {event_id} → {callback_url}")
+    except Exception as e:
+        logger.warning(f"CALLBACK FAILED: {event_id} → {callback_url}: {e}")
+
+
 @app.post("/actions/{event_id}/approve")
-async def approve_action(event_id: str, approval: ApprovalRequest):
+async def approve_action(event_id: str, approval: ApprovalRequest, background_tasks: BackgroundTasks):
     """Human approves a pending action."""
     event = event_store.update_result(
         event_id=event_id,
@@ -210,6 +250,9 @@ async def approve_action(event_id: str, approval: ApprovalRequest):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
+    # Fire callback to waiting agent
+    background_tasks.add_task(_fire_callback, event_id, "approved", approval.authorized_by)
+
     # Clean up pending
     pending_actions.pop(event_id, None)
 
@@ -218,7 +261,7 @@ async def approve_action(event_id: str, approval: ApprovalRequest):
 
 
 @app.post("/actions/{event_id}/reject")
-async def reject_action(event_id: str, approval: ApprovalRequest):
+async def reject_action(event_id: str, approval: ApprovalRequest, background_tasks: BackgroundTasks):
     """Human rejects a pending action."""
     event = event_store.update_result(
         event_id=event_id,
@@ -228,6 +271,9 @@ async def reject_action(event_id: str, approval: ApprovalRequest):
     )
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+
+    # Fire callback to waiting agent
+    background_tasks.add_task(_fire_callback, event_id, "rejected", approval.authorized_by)
 
     pending_actions.pop(event_id, None)
 
@@ -295,6 +341,7 @@ async def slack_interact(request: Request):
         event_id = action.get("value")
 
         if action_id == "gate_approve":
+            await _fire_callback(event_id, "approved", user_name)
             event_store.update_result(
                 event_id=event_id,
                 result="approved",
@@ -305,6 +352,7 @@ async def slack_interact(request: Request):
             return {"response_type": "in_channel", "text": f"✅ Approved by {user_name}"}
 
         elif action_id == "gate_reject":
+            await _fire_callback(event_id, "rejected", user_name)
             event_store.update_result(
                 event_id=event_id,
                 result="rejected",

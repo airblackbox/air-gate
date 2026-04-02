@@ -1,15 +1,25 @@
-# AIR Blackbox Gate
+# AIR Gate
 
-**The AI Action Firewall** — Every agent action recorded, attributable, and provable.
+**The AI Action Firewall** — Every agent action gated, signed, and auditable.
 
-Gate sits between your AI agents and the real world. Every action flows through Gate, gets checked against policy, and produces a tamper-evident signed record. Think of it like a firewall — but for AI agent actions instead of network traffic.
+Gate sits between your AI agents and the real world. Every action flows through Gate, gets checked against policy, PII is automatically redacted, and everything produces a tamper-evident signed record.
 
-## What It Does
+## What's New in v0.2.0
+
+- **PII Redaction** — Automatic detection and redaction of emails, SSNs, credit cards, medical records, and 25+ PII categories before they enter the audit chain. GDPR, HIPAA, PCI-DSS compliant.
+- **GateClient SDK** — Use Gate as a library without running a server. `from gate import GateClient`
+- **Callback URLs** — Gate POSTs the decision back to your agent when a human approves/rejects in Slack.
+- **Framework Integrations** — Drop-in wrappers for LangChain tools and OpenAI function tools.
+- **Rebranded CLI** — `air-gate demo` and `air-gate verify` (was air-blackbox).
+
+## How It Works
 
 ```
 Agent wants to send email
        ↓
    Gate intercepts
+       ↓
+   PII redacted from payload
        ↓
    Policy check
        ↓
@@ -20,39 +30,91 @@ Auto-Allow  Slack   Block
   ↓         ↓        ↓
   Signed event recorded
   (HMAC-SHA256 chain)
+       ↓
+  Callback to agent
 ```
-
-- **Intercept** — Every agent action hits Gate before reaching the real world
-- **Policy** — Rules decide: auto-allow, require human approval, or block
-- **Approve** — Humans approve/reject actions in Slack (no dashboard needed)
-- **Sign** — Every action produces a cryptographically chained event
-- **Report** — Generate compliance PDFs for legal/audit teams
 
 ## Quick Start
 
-```bash
-# Install
-pip install -r requirements.txt
+### Option 1: Library Mode (no server)
 
-# Start Gate
-uvicorn gate.proxy:app --reload
+```python
+from gate import GateClient
 
-# Run the demo
-python3 demo.py
+gate = GateClient()  # local mode, zero config
+
+result = gate.check("my-agent", "email", "send_email",
+                    payload={"to": "jane@example.com"})
+
+if result["decision"] == "auto_allowed":
+    send_the_email()
+elif result["decision"] == "blocked":
+    print("Blocked:", result["reason"])
+
+# Verify the audit chain anytime
+print(gate.verify())
 ```
 
-The demo simulates a recruiting AI agent sending outreach emails through Gate. You'll see actions get auto-allowed, held for approval, and blocked — with every action signed and chained.
+### Option 2: Server Mode (Slack approvals)
+
+```bash
+pip install air-gate[server]
+uvicorn gate.proxy:app --reload
+```
+
+```python
+gate = GateClient(server_url="http://localhost:8000")
+result = gate.check("my-agent", "email", "send_email",
+                    payload={"to": "jane@example.com"},
+                    callback_url="http://my-agent/callback")
+```
+
+### Option 3: Framework Integrations
+
+**LangChain:**
+```python
+from gate.integrations.langchain import GatedTool
+
+gated_search = GatedTool(tool=my_search_tool, agent_id="research-agent")
+# Use gated_search in your agent chain — every call goes through Gate
+```
+
+**OpenAI Function Tools:**
+```python
+from gate.integrations.openai_agents import gated_tool
+from gate import GateClient
+
+gate = GateClient()
+
+@gated_tool(gate=gate, agent_id="assistant-v1")
+def send_email(to: str, subject: str, body: str) -> str:
+    return f"Email sent to {to}"
+```
+
+## Run the Demo
+
+```bash
+pip install air-gate
+air-gate demo
+```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set your signing key:
+Copy `.env.example` to `.env`:
 
 ```bash
 cp .env.example .env
-# Edit .env with your GATE_SIGNING_KEY and optional SLACK_WEBHOOK_URL
 ```
 
-Edit `gate_config.yaml` to define your policy rules:
+Key environment variables:
+- `GATE_SIGNING_KEY` — HMAC signing key (required for production)
+- `GATE_STORAGE_PATH` — Event storage file (default: `gate_events.jsonl`)
+- `GATE_PII_REDACTION` — Enable PII auto-redaction (default: `true`)
+- `GATE_PII_METHOD` — Redaction method: `hash_sha256`, `mask`, `remove`, `tokenise`
+- `SLACK_WEBHOOK_URL` — Slack incoming webhook for approvals
+- `SLACK_BOT_TOKEN` — Slack bot token (for full interactivity)
+
+Edit `gate_config.yaml` for policy rules:
 
 ```yaml
 policy:
@@ -81,46 +143,43 @@ policy:
 | `/events/{id}` | GET | Get a specific event |
 | `/verify` | GET | Verify audit chain integrity |
 | `/stats` | GET | Summary statistics |
-| `/report` | GET | Generate compliance report |
+| `/report` | GET | Generate compliance report (HTML/JSON/Markdown) |
 | `/health` | GET | Health check |
 
-## Slack Integration
+## PII Redaction
 
-Gate sends approval requests to Slack with Approve/Reject buttons:
+Gate automatically detects and redacts 25+ categories of PII before data enters the audit chain:
 
-1. Create a Slack app at https://api.slack.com/apps
-2. Enable Incoming Webhooks
-3. Set `SLACK_WEBHOOK_URL` in your `.env`
-4. Point the Slack interactivity URL to `https://your-gate-url/slack/interact`
+- **Universal:** Email, phone, IP, date of birth, passport, national ID
+- **Recruiting:** LinkedIn URLs, resume text, protected characteristics (EEOC)
+- **Finance:** Credit cards, bank accounts, routing numbers, SSN, tax ID (PCI-DSS)
+- **Healthcare:** Medical record numbers, health plan IDs, NPI (HIPAA)
+- **Legal:** Case numbers, bar numbers, client matter IDs
 
-## Compliance Reports
-
-Generate reports at `/report`:
-
-- `/report` — HTML (print to PDF from browser)
-- `/report?format=json` — Raw data
-- `/report?format=markdown` — Markdown
-- `/report?start=2026-01-01&end=2026-02-01` — Date range
-
-Reports include: action counts, approval rates, human oversight summary, anomaly detection, and cryptographic chain verification.
+Every redaction is logged with SHA-256 hash of the original value, enabling GDPR Article 17 erasure lookups.
 
 ## Architecture
 
 ```
 gate/
-├── proxy.py          — FastAPI server (the main entry point)
-├── events.py         — HMAC-SHA256 signed event store
-├── policy.py         — Policy engine (auto-allow, require-approval, block)
-├── slack_bot.py      — Slack approval bot
-├── report.py         — Compliance report data + markdown rendering
-└── report_endpoint.py — /report API endpoint with HTML output
+├── client.py           — GateClient SDK (library mode)
+├── proxy.py            — FastAPI server (server mode)
+├── events.py           — HMAC-SHA256 signed event store (SQLite + JSONL)
+├── policy.py           — Policy engine (YAML rules)
+├── pii.py              — PII detection + redaction (multi-vertical)
+├── slack_bot.py        — Slack approval bot (Block Kit)
+├── report.py           — Compliance report generator
+├── report_endpoint.py  — /report API endpoint
+├── tracing.py          — OpenTelemetry integration
+├── cli.py              — air-gate CLI
+└── integrations/
+    ├── langchain.py    — LangChain tool wrapper
+    └── openai_agents.py — OpenAI function tool decorator
 ```
 
 ## Part of AIR Blackbox
 
-- **AIR Blackbox Scan** tells you if your AI system is built right (build-time compliance)
-- **AIR Blackbox Gate** makes sure it behaves right (runtime control)
+- **AIR Blackbox** scans your AI system for compliance issues (build-time)
+- **AIR Gate** controls what your AI agents can do at runtime
 
-Together: full AI governance lifecycle.
-
-[airblackbox.ai](https://airblackbox.ai)
+Together: full AI governance lifecycle. [airblackbox.ai](https://airblackbox.ai)
