@@ -6,7 +6,7 @@ Drop-in LangChain tool wrapper that routes every tool call through Gate.
 Usage:
 
     from langchain.tools import DuckDuckGoSearchRun
-    from gate.integrations.langchain import GatedTool
+    from air_gate.integrations.langchain import GatedTool
 
     search = DuckDuckGoSearchRun()
     gated_search = GatedTool(
@@ -66,7 +66,7 @@ class GatedTool:
         if gate_client:
             self._client = gate_client
         else:
-            from gate.client import GateClient
+            from air_gate.client import GateClient
             self._client = GateClient(server_url=gate_url)
 
         # Copy LangChain tool attributes so the wrapper looks like the original

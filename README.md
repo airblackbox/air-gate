@@ -11,7 +11,7 @@ Gate sits between your AI agents and the real world. Every action flows through 
 ## What's New in v0.2.0
 
 - **PII Redaction** — Automatic detection and redaction of emails, SSNs, credit cards, medical records, and 25+ PII categories before they enter the audit chain. GDPR, HIPAA, PCI-DSS compliant.
-- **GateClient SDK** — Use Gate as a library without running a server. `from gate import GateClient`
+- **GateClient SDK** — Use Gate as a library without running a server. `from air_gate import GateClient`
 - **Callback URLs** — Gate POSTs the decision back to your agent when a human approves/rejects in Slack.
 - **Framework Integrations** — Drop-in wrappers for LangChain tools and OpenAI function tools.
 - **Rebranded CLI** — `air-gate demo` and `air-gate verify` (was air-blackbox).
@@ -42,7 +42,7 @@ Auto-Allow  Slack   Block
 ### Option 1: Library Mode (no server)
 
 ```python
-from gate import GateClient
+from air_gate import GateClient
 
 gate = GateClient()  # local mode, zero config
 result = gate.check("my-agent", "email", "send_email",
@@ -75,15 +75,15 @@ result = gate.check("my-agent", "email", "send_email",
 
 **LangChain:**
 ```python
-from gate.integrations.langchain import GatedTool
+from air_gate.integrations.langchain import GatedTool
 gated_search = GatedTool(tool=my_search_tool, agent_id="research-agent")
 # Use gated_search in your agent chain — every call goes through Gate
 ```
 
 **OpenAI Function Tools:**
 ```python
-from gate.integrations.openai_agents import gated_tool
-from gate import GateClient
+from air_gate.integrations.openai_agents import gated_tool
+from air_gate import GateClient
 
 gate = GateClient()
 

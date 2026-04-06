@@ -13,8 +13,8 @@ Regulatory verticals covered:
 
 Usage::
 
-    from gate.events import EventStore
-    from gate.pii import PIIRedactionPolicy, LawfulBasis, DataRegion
+    from air_gate.events import EventStore
+    from air_gate.pii import PIIRedactionPolicy, LawfulBasis, DataRegion
 
     store = EventStore(signing_key="...")
     policy = PIIRedactionPolicy(
@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from gate.events import EventStore, GateEvent
+from air_gate.events import EventStore, GateEvent
 
 
 # ---------------------------------------------------------------------------

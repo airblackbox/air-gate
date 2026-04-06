@@ -7,7 +7,7 @@ every tool call through Gate for policy + audit.
 Usage:
 
     from openai import OpenAI
-    from gate.integrations.openai_agents import gated_tool
+    from air_gate.integrations.openai_agents import gated_tool
     from gate import GateClient
 
     gate = GateClient()  # local mode, or GateClient(server_url="...")

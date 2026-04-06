@@ -2,8 +2,8 @@
 
 import json
 import pytest
-from gate.events import EventStore, GateEvent
-from gate.policy import PolicyEngine, PolicyRule
+from air_gate.events import EventStore, GateEvent
+from air_gate.policy import PolicyEngine, PolicyRule
 
 
 # ── Event Store Tests ─────────────────────────────────────────────────

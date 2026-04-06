@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "air-gate"
-version = "0.2.0"
+version = "0.2.1"
 description = "The AI Action Firewall — policy engine, PII redaction, HMAC-SHA256 audit chains, Slack approvals, and framework integrations for EU AI Act compliance"
 readme = "README.md"
 license = "Apache-2.0"
@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-air-gate = "gate.cli:main"
+air-gate = "air_gate.cli:main"
 
 [project.urls]
 Homepage = "https://airblackbox.ai"
@@ -55,7 +55,7 @@ Documentation = "https://airblackbox.ai/quickstart"
 Issues = "https://github.com/airblackbox/air-gate/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["gate"]
+packages = ["air_gate"]
 
 [tool.ruff]
 line-length = 120

@@ -11,8 +11,8 @@ import hashlib
 import re
 import pytest
 
-from gate.events import EventStore, GateEvent
-from gate.pii import (
+from air_gate.events import EventStore, GateEvent
+from air_gate.pii import (
     DataRegion,
     LawfulBasis,
     PIICategory,
