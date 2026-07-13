@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "air-gate"
-version = "0.2.1"
+version = "0.3.0"
 description = "The AI Action Firewall — policy engine, PII redaction, HMAC-SHA256 audit chains, Slack approvals, and framework integrations for EU AI Act compliance"
 readme = "README.md"
 license = "Apache-2.0"

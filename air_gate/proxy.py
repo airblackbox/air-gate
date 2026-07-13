@@ -51,7 +51,7 @@ logger = logging.getLogger("gate")
 app = FastAPI(
     title="AIR Blackbox Gate",
     description="The AI Action Firewall - Every agent action recorded, attributable, and provable.",
-    version="0.1.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -484,7 +484,7 @@ async def health():
     chain = event_store.verify_chain()
     return {
         "status": "healthy",
-        "version": "0.1.0",
+        "version": "0.3.0",
         "events_count": len(event_store.events),
         "chain_valid": chain["valid"],
         "pending_approvals": len(event_store.pending_actions()),

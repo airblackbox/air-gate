@@ -20,7 +20,7 @@ from pathlib import Path
 from .events import EventStore, GateEvent
 from .policy import PolicyEngine, PolicyRule
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Back-compat: CLI was originally named air-blackbox in the gate repo
 
@@ -449,7 +449,7 @@ def main():
     elif args.command == "keygen":
         run_keygen()
     elif args.command == "version":
-        print(f"air-blackbox {__version__}")
+        print(f"air-gate {__version__}")
     else:
         banner()
         parser.print_help()
