@@ -84,6 +84,47 @@ class TestEventStore:
         assert stats["unique_agents"] == 2
         assert stats["by_result"]["approved"] == 1
 
+    def test_resolve_keeps_chain_valid(self):
+        """Resolving a non-last event must not break the chain (regression)."""
+        pending = GateEvent(agent_id="a", action_type="email", tool_name="send", result="pending")
+        self.store.record(pending)
+        # A later action arrives before the human decides.
+        self.store.record(GateEvent(agent_id="a", action_type="search", tool_name="find", result="auto_allowed"))
+
+        decision = self.store.resolve(pending.event_id, "approved", "human@co", "ok")
+
+        assert decision is not None
+        assert decision.entry_type == "decision"
+        assert decision.related_event_id == pending.event_id
+        # Original action event is never mutated.
+        assert pending.result == "pending"
+        # Chain stays intact and the effective result reflects the approval.
+        assert self.store.verify_chain()["valid"] is True
+        assert self.store.current_result(pending.event_id) == "approved"
+
+    def test_resolve_unknown_event(self):
+        assert self.store.resolve("does-not-exist", "approved", "human@co") is None
+
+    def test_stats_folds_decisions(self):
+        """A resolved action counts once, under its effective result."""
+        pending = GateEvent(agent_id="a1", action_type="email", tool_name="send", result="pending")
+        self.store.record(pending)
+        self.store.resolve(pending.event_id, "approved", "human@co")
+
+        stats = self.store.get_stats()
+        assert stats["total"] == 1  # decision event is not a separate action
+        assert stats["by_result"] == {"approved": 1}
+        assert stats["chain_valid"] is True
+
+    def test_input_context_is_signed(self):
+        """input_context and result_detail are covered by the HMAC (regression)."""
+        e = GateEvent(agent_id="a", action_type="email", tool_name="send",
+                      input_context="92% fit", result_detail="reason")
+        self.store.record(e)
+
+        self.store.events[0].input_context = "TAMPERED"
+        assert self.store.verify_chain()["valid"] is False
+
 
 # ── Policy Engine Tests ───────────────────────────────────────────────
 
@@ -111,7 +152,7 @@ class TestPolicyEngine:
         assert result["decision"] == "block"
 
     def test_first_match_wins(self):
-        """Rules are evaluated in order — first match wins."""
+        """Rules are evaluated in order - first match wins."""
         engine = PolicyEngine(rules=[
             PolicyRule(name="block-agent-x", agent_id="evil-agent", decision="block"),
             PolicyRule(name="allow-email", action_type="email", decision="auto_allow"),
