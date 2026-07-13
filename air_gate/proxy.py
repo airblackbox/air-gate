@@ -74,6 +74,13 @@ PII_REDACTION = os.getenv("GATE_PII_REDACTION", "true").lower() in ("true", "1",
 PII_METHOD = os.getenv("GATE_PII_METHOD", "hash_sha256")
 CALLBACK_TIMEOUT = int(os.getenv("GATE_CALLBACK_TIMEOUT", "300"))
 
+# Signature algorithm for the audit chain. "HMAC-SHA256" (default, symmetric)
+# or "Ed25519" (asymmetric: verifiable with only the public key). For Ed25519,
+# provide GATE_ED25519_PRIVATE_HEX (32-byte hex seed) to sign.
+SIGNATURE_ALGORITHM = os.getenv("GATE_SIGNATURE_ALGORITHM", "HMAC-SHA256")
+ED25519_PRIVATE_HEX = os.getenv("GATE_ED25519_PRIVATE_HEX", "")
+ED25519_PUBLIC_HEX = os.getenv("GATE_ED25519_PUBLIC_HEX", "")
+
 # Shared secret required to approve/reject actions over the HTTP API. If unset,
 # the approval endpoints are UNAUTHENTICATED - anyone who can reach the server
 # can approve or reject on any human's behalf, which defeats the Article 14
@@ -112,7 +119,16 @@ def require_approver(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=401, detail="Invalid or missing approver token")
 
 # Initialize components
-event_store = EventStore(signing_key=SIGNING_KEY, storage_path=STORAGE_PATH)
+from .signing import build_signer
+_signer = build_signer(
+    signing_key=SIGNING_KEY,
+    algorithm=SIGNATURE_ALGORITHM,
+    ed25519_private_hex=ED25519_PRIVATE_HEX or None,
+    ed25519_public_hex=ED25519_PUBLIC_HEX or None,
+)
+event_store = EventStore(signer=_signer, storage_path=STORAGE_PATH)
+if _signer.algorithm == "Ed25519":
+    logger.info(f"Audit chain signing: Ed25519 (public key: {_signer.public_key_hex})")
 slack_bot = SlackBot()
 pii_redactor = PIIRedactor(method=RedactionMethod(PII_METHOD)) if PII_REDACTION else None
 

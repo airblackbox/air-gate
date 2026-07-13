@@ -40,9 +40,13 @@ server = [
 langchain = [
     "langchain-core>=0.1.0",
 ]
+crypto = [
+    "cryptography>=42.0.0",
+]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.scripts]
