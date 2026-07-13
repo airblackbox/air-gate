@@ -84,6 +84,47 @@ class TestEventStore:
         assert stats["unique_agents"] == 2
         assert stats["by_result"]["approved"] == 1
 
+    def test_resolve_keeps_chain_valid(self):
+        """Resolving a non-last event must not break the chain (regression)."""
+        pending = GateEvent(agent_id="a", action_type="email", tool_name="send", result="pending")
+        self.store.record(pending)
+        # A later action arrives before the human decides.
+        self.store.record(GateEvent(agent_id="a", action_type="search", tool_name="find", result="auto_allowed"))
+
+        decision = self.store.resolve(pending.event_id, "approved", "human@co", "ok")
+
+        assert decision is not None
+        assert decision.entry_type == "decision"
+        assert decision.related_event_id == pending.event_id
+        # Original action event is never mutated.
+        assert pending.result == "pending"
+        # Chain stays intact and the effective result reflects the approval.
+        assert self.store.verify_chain()["valid"] is True
+        assert self.store.current_result(pending.event_id) == "approved"
+
+    def test_resolve_unknown_event(self):
+        assert self.store.resolve("does-not-exist", "approved", "human@co") is None
+
+    def test_stats_folds_decisions(self):
+        """A resolved action counts once, under its effective result."""
+        pending = GateEvent(agent_id="a1", action_type="email", tool_name="send", result="pending")
+        self.store.record(pending)
+        self.store.resolve(pending.event_id, "approved", "human@co")
+
+        stats = self.store.get_stats()
+        assert stats["total"] == 1  # decision event is not a separate action
+        assert stats["by_result"] == {"approved": 1}
+        assert stats["chain_valid"] is True
+
+    def test_input_context_is_signed(self):
+        """input_context and result_detail are covered by the HMAC (regression)."""
+        e = GateEvent(agent_id="a", action_type="email", tool_name="send",
+                      input_context="92% fit", result_detail="reason")
+        self.store.record(e)
+
+        self.store.events[0].input_context = "TAMPERED"
+        assert self.store.verify_chain()["valid"] is False
+
 
 # ── Policy Engine Tests ───────────────────────────────────────────────
 
@@ -111,7 +152,7 @@ class TestPolicyEngine:
         assert result["decision"] == "block"
 
     def test_first_match_wins(self):
-        """Rules are evaluated in order — first match wins."""
+        """Rules are evaluated in order - first match wins."""
         engine = PolicyEngine(rules=[
             PolicyRule(name="block-agent-x", agent_id="evil-agent", decision="block"),
             PolicyRule(name="allow-email", action_type="email", decision="auto_allow"),
@@ -144,6 +185,62 @@ class TestPolicyEngine:
         assert engine.evaluate("a", "email", "send")["decision"] == "auto_allow"
         # Third should be blocked
         assert engine.evaluate("a", "email", "send")["decision"] == "block"
+
+
+# ── Client / HITL wait Tests ──────────────────────────────────────────
+
+class TestClientWait:
+
+    def _client(self, tmp_path):
+        from air_gate.client import GateClient
+        return GateClient(
+            storage_path=str(tmp_path / "c.db"),
+            policy_config={
+                "default": "require_approval",
+                "rules": [
+                    {"name": "emails", "action_type": "email", "decision": "require_approval"},
+                    {"name": "search", "action_type": "search", "decision": "auto_allow"},
+                ],
+            },
+        )
+
+    def test_local_pending_uses_server_vocabulary(self, tmp_path):
+        """Local mode returns 'pending_approval' (not 'pending') like the server."""
+        gate = self._client(tmp_path)
+        r = gate.check("a", "email", "send", payload={"to": "x@y.com"})
+        assert r["decision"] == "pending_approval"
+
+    def test_wait_returns_approved_once_resolved(self, tmp_path):
+        gate = self._client(tmp_path)
+        r = gate.check("a", "email", "send", payload={"to": "x@y.com"})
+        assert gate.status(r["event_id"]) == "pending"
+        gate.approve(r["event_id"], "boss@co")
+        assert gate.wait_for_decision(r["event_id"], timeout=2) == "approved"
+
+    def test_wait_times_out_to_pending(self, tmp_path):
+        gate = self._client(tmp_path)
+        r = gate.check("a", "email", "send", payload={"to": "x@y.com"})
+        # Nobody approves -> must fail closed (return non-approved) quickly.
+        assert gate.wait_for_decision(r["event_id"], timeout=0.3, poll_interval=0.05) == "pending"
+
+    def test_gated_tool_fails_closed_without_approval(self, tmp_path):
+        from air_gate.integrations.langchain import GatedTool
+
+        class FakeTool:
+            name = "send"
+            description = ""
+            def __init__(self): self.ran = False
+            def run(self, *a, **k):
+                self.ran = True
+                return "SENT"
+
+        gate = self._client(tmp_path)
+        tool = FakeTool()
+        gt = GatedTool(tool=tool, agent_id="a", gate_client=gate,
+                       action_type="email", timeout=0.3)
+        out = gt.run("hi")
+        assert tool.ran is False
+        assert out == gt.block_message
 
 
 if __name__ == "__main__":

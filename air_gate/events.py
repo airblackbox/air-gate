@@ -3,7 +3,7 @@ Tamper-evident signed event store using HMAC-SHA256 chains.
 
 Every agent action produces a signed event. Events are cryptographically
 chained so that any tampering (editing, deleting, reordering) is detectable.
-This is not a log file — it's legal evidence.
+This is not a log file - it's legal evidence.
 
 Supports two storage backends:
   - JSONL (default for backward compatibility): gate_events.jsonl
@@ -28,6 +28,12 @@ class GateEvent(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+
+    # Kind of entry: "action" (an agent action) or "decision" (a human/policy
+    # resolution of an earlier action). Decision entries are appended, never
+    # mutated in place, so the chain stays append-only.
+    entry_type: str = "action"
+    related_event_id: str = ""  # for decisions: the action event being resolved
 
     # Who
     agent_id: str
@@ -89,11 +95,15 @@ class EventStore:
             {
                 "event_id": event.event_id,
                 "timestamp": event.timestamp,
+                "entry_type": event.entry_type,
+                "related_event_id": event.related_event_id,
                 "agent_id": event.agent_id,
                 "action_type": event.action_type,
                 "tool_name": event.tool_name,
+                "input_context": event.input_context,
                 "payload": event.payload,
                 "result": event.result,
+                "result_detail": event.result_detail,
                 "authorized_by": event.authorized_by,
                 "previous_hash": event.previous_hash,
             },
@@ -117,17 +127,64 @@ class EventStore:
 
         return event
 
-    def update_result(self, event_id: str, result: str, authorized_by: str, detail: str = "") -> Optional[GateEvent]:
-        """Update an event's result (e.g., when human approves/rejects)."""
-        for event in self.events:
-            if event.event_id == event_id:
-                event.result = result
-                event.authorized_by = authorized_by
-                event.result_detail = detail
-                event.hmac_signature = self._compute_hmac(event)
-                self._persist_all()
-                return event
-        return None
+    def resolve(
+        self, event_id: str, result: str, authorized_by: str, detail: str = ""
+    ) -> Optional[GateEvent]:
+        """
+        Resolve a pending action by *appending* a new signed decision event.
+
+        The original action event is never mutated - this keeps the chain
+        strictly append-only, so an approval or rejection can never break the
+        HMAC linkage of events recorded after it. The decision event records
+        who resolved it, the outcome, and any reason (all of which are signed).
+
+        Returns the newly appended decision event, or None if no action with
+        ``event_id`` exists.
+        """
+        action = next((e for e in self.events if e.event_id == event_id), None)
+        if action is None:
+            return None
+
+        decision = GateEvent(
+            entry_type="decision",
+            related_event_id=event_id,
+            agent_id=action.agent_id,
+            action_type=action.action_type,
+            tool_name=action.tool_name,
+            input_context=action.input_context,
+            result=result,
+            result_detail=detail,
+            authorized_by=authorized_by,
+        )
+        return self.record(decision)
+
+    # Back-compat alias. Older callers expect ``update_result``; it now appends
+    # a decision event instead of mutating in place (returns that new event).
+    update_result = resolve
+
+    def current_result(self, event_id: str) -> Optional[str]:
+        """
+        Effective result of an action: the outcome of the latest decision
+        event that references it, or the action's own result if unresolved.
+        """
+        action = next((e for e in self.events if e.event_id == event_id), None)
+        if action is None:
+            return None
+        latest = action.result
+        for e in self.events:
+            if e.entry_type == "decision" and e.related_event_id == event_id:
+                latest = e.result
+        return latest
+
+    def _resolved_results(self) -> dict:
+        """Map action event_id -> effective result (latest decision wins)."""
+        resolved = {
+            e.event_id: e.result for e in self.events if e.entry_type != "decision"
+        }
+        for e in self.events:
+            if e.entry_type == "decision" and e.related_event_id in resolved:
+                resolved[e.related_event_id] = e.result
+        return resolved
 
     def verify_chain(self) -> dict:
         """Verify the entire chain is intact. Returns verification report."""
@@ -185,17 +242,26 @@ class EventStore:
         return filtered
 
     def get_stats(self) -> dict:
-        """Get summary statistics for reporting."""
-        total = len(self.events)
+        """
+        Get summary statistics for reporting.
+
+        Counts one row per agent *action*; the human/policy decisions that
+        resolve those actions are folded into each action's effective result
+        rather than counted as separate events.
+        """
+        actions = [e for e in self.events if e.entry_type != "decision"]
+        total = len(actions)
         if total == 0:
             return {"total": 0}
 
+        resolved = self._resolved_results()
         results = {}
         action_types = {}
         agents = set()
 
-        for e in self.events:
-            results[e.result] = results.get(e.result, 0) + 1
+        for e in actions:
+            effective = resolved.get(e.event_id, e.result)
+            results[effective] = results.get(effective, 0) + 1
             action_types[e.action_type] = action_types.get(e.action_type, 0) + 1
             agents.add(e.agent_id)
 
@@ -217,6 +283,8 @@ class EventStore:
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id TEXT UNIQUE NOT NULL,
                 timestamp TEXT NOT NULL,
+                entry_type TEXT DEFAULT 'action',
+                related_event_id TEXT DEFAULT '',
                 agent_id TEXT NOT NULL,
                 authorized_by TEXT DEFAULT 'pending',
                 action_type TEXT NOT NULL,
@@ -239,12 +307,13 @@ class EventStore:
         conn = sqlite3.connect(self.storage_path)
         conn.execute(
             """INSERT OR REPLACE INTO events
-               (event_id, timestamp, agent_id, authorized_by, action_type,
-                tool_name, input_context, payload, result, result_detail,
-                previous_hash, hmac_signature)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (event_id, timestamp, entry_type, related_event_id, agent_id,
+                authorized_by, action_type, tool_name, input_context, payload,
+                result, result_detail, previous_hash, hmac_signature)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                event.event_id, event.timestamp, event.agent_id,
+                event.event_id, event.timestamp, event.entry_type,
+                event.related_event_id, event.agent_id,
                 event.authorized_by, event.action_type, event.tool_name,
                 event.input_context, json.dumps(event.payload),
                 event.result, event.result_detail,
@@ -261,12 +330,13 @@ class EventStore:
         for event in self.events:
             conn.execute(
                 """INSERT INTO events
-                   (event_id, timestamp, agent_id, authorized_by, action_type,
-                    tool_name, input_context, payload, result, result_detail,
-                    previous_hash, hmac_signature)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (event_id, timestamp, entry_type, related_event_id, agent_id,
+                    authorized_by, action_type, tool_name, input_context, payload,
+                    result, result_detail, previous_hash, hmac_signature)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    event.event_id, event.timestamp, event.agent_id,
+                    event.event_id, event.timestamp, event.entry_type,
+                    event.related_event_id, event.agent_id,
                     event.authorized_by, event.action_type, event.tool_name,
                     event.input_context, json.dumps(event.payload),
                     event.result, event.result_detail,

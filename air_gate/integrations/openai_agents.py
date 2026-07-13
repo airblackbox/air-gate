@@ -8,7 +8,7 @@ Usage:
 
     from openai import OpenAI
     from air_gate.integrations.openai_agents import gated_tool
-    from gate import GateClient
+    from air_gate import GateClient
 
     gate = GateClient()  # local mode, or GateClient(server_url="...")
 
@@ -37,6 +37,8 @@ def gated_tool(
     agent_id: str,
     action_type: str = "tool_call",
     block_return: str = "[BLOCKED BY POLICY]",
+    wait: bool = True,
+    timeout: float = 300.0,
 ):
     """
     Decorator that wraps any function tool with Gate policy checking.
@@ -50,7 +52,14 @@ def gated_tool(
     action_type : str
         Classification for this tool's actions.
     block_return : str
-        What to return when Gate blocks the action.
+        What to return when Gate blocks (or does not approve) the action.
+    wait : bool
+        When True (default), a pending action BLOCKS until a human approves or
+        rejects, and the function runs only if approved. This is what enforces
+        human-in-the-loop. When False, a pending action returns immediately
+        without executing.
+    timeout : float
+        Seconds to wait for a human decision before failing closed.
 
     Returns
     -------
@@ -77,16 +86,23 @@ def gated_tool(
             )
 
             decision = result.get("decision", "blocked")
+            event_id = result.get("event_id", "")
 
             if decision == "blocked":
                 logger.warning(f"BLOCKED: {agent_id} → {tool_name}: {result.get('reason')}")
                 return block_return
 
             if decision == "pending_approval":
-                logger.info(f"PENDING: {agent_id} → {tool_name}")
-                return f"[PENDING APPROVAL] Event ID: {result.get('event_id')}"
+                if not wait:
+                    logger.info(f"PENDING: {agent_id} → {tool_name} (wait=False)")
+                    return f"[PENDING APPROVAL] Event ID: {event_id}"
+                logger.info(f"PENDING: {agent_id} → {tool_name} - waiting for approval")
+                final = gate.wait_for_decision(event_id, timeout=timeout)
+                if final != "approved":
+                    logger.warning(f"NOT APPROVED ({final}): {agent_id} → {tool_name}")
+                    return block_return
 
-            # Allowed — execute the function
+            # Allowed - execute the function
             logger.info(f"ALLOWED: {agent_id} → {tool_name}")
             return func(*args, **kwargs)
 
@@ -105,11 +121,16 @@ def gated_tool(
             )
 
             decision = result.get("decision", "blocked")
+            event_id = result.get("event_id", "")
 
             if decision == "blocked":
                 return block_return
             if decision == "pending_approval":
-                return f"[PENDING APPROVAL] Event ID: {result.get('event_id')}"
+                if not wait:
+                    return f"[PENDING APPROVAL] Event ID: {event_id}"
+                final = await gate.await_decision(event_id, timeout=timeout)
+                if final != "approved":
+                    return block_return
 
             if inspect.iscoroutinefunction(func):
                 return await func(*args, **kwargs)
