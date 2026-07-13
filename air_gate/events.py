@@ -93,6 +93,8 @@ class EventStore:
         self.signing_key = (signing_key or "change-me-in-production").encode("utf-8")
         self.storage_path = storage_path
         self.events: list[GateEvent] = []
+        # In-memory callback fallback (JSONL backend only; SQLite persists them).
+        self._callbacks: dict[str, str] = {}
 
         # Auto-detect backend from file extension
         if backend:
@@ -228,6 +230,35 @@ class EventStore:
                 resolved[e.related_event_id] = e.result
         return resolved
 
+    def pending_actions(self) -> list[GateEvent]:
+        """
+        Action events still awaiting a human decision. Derived from the chain,
+        so it survives restarts and is consistent across workers sharing the DB
+        (no in-memory pending list to lose).
+        """
+        resolved = self._resolved_results()
+        return [
+            e for e in self.events
+            if e.entry_type != "decision" and resolved.get(e.event_id) == "pending"
+        ]
+
+    def count_recent_actions(
+        self, agent_id: str, action_type: str, tool_name: str, since_iso: str
+    ) -> int:
+        """
+        Count action events matching (agent, action_type, tool) at or after
+        ``since_iso``. Used for durable, cross-worker rate limiting (decisions
+        are excluded so approvals don't inflate the count).
+        """
+        return sum(
+            1 for e in self.events
+            if e.entry_type != "decision"
+            and e.agent_id == agent_id
+            and e.action_type == action_type
+            and e.tool_name == tool_name
+            and e.timestamp >= since_iso
+        )
+
     def verify_chain(self) -> dict:
         """Verify the entire chain is intact. Returns verification report."""
         if not self.events:
@@ -349,6 +380,14 @@ class EventStore:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_result ON events(result)")
+        # Durable callback URLs for pending actions (survive restart / shared
+        # across workers), so a decision can still reach the waiting agent.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_callbacks (
+                event_id TEXT PRIMARY KEY,
+                callback_url TEXT NOT NULL
+            )
+        """)
         # Migration: add signature_algorithm to DBs created before signer support.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(events)")]
         if "signature_algorithm" not in cols:
@@ -357,6 +396,44 @@ class EventStore:
             )
         conn.commit()
         conn.close()
+
+    # ── Pending callback URLs ───────────────────────────────────────
+
+    def set_callback(self, event_id: str, callback_url: str):
+        """Persist the agent's callback URL for a pending action."""
+        if not callback_url:
+            return
+        if self._backend == "sqlite":
+            conn = sqlite3.connect(self.storage_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_callbacks (event_id, callback_url) VALUES (?, ?)",
+                (event_id, callback_url),
+            )
+            conn.commit()
+            conn.close()
+        else:
+            self._callbacks[event_id] = callback_url
+
+    def get_callback(self, event_id: str) -> str:
+        """Fetch the stored callback URL for an action (empty if none)."""
+        if self._backend == "sqlite":
+            conn = sqlite3.connect(self.storage_path)
+            row = conn.execute(
+                "SELECT callback_url FROM pending_callbacks WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            conn.close()
+            return row[0] if row else ""
+        return self._callbacks.get(event_id, "")
+
+    def clear_callback(self, event_id: str):
+        """Remove a callback once its action is resolved."""
+        if self._backend == "sqlite":
+            conn = sqlite3.connect(self.storage_path)
+            conn.execute("DELETE FROM pending_callbacks WHERE event_id = ?", (event_id,))
+            conn.commit()
+            conn.close()
+        else:
+            self._callbacks.pop(event_id, None)
 
     def _sqlite_persist(self, event: GateEvent):
         """Insert a single event into SQLite."""

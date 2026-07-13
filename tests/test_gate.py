@@ -243,5 +243,60 @@ class TestClientWait:
         assert out == gt.block_message
 
 
+# ── Durable state (pending + callbacks + rate limit) Tests ────────────
+
+class TestDurableState:
+
+    def test_pending_survives_reload(self, tmp_path):
+        path = str(tmp_path / "d.db")
+        s = EventStore(signing_key="k", storage_path=path)
+        a = GateEvent(agent_id="ag", action_type="email", tool_name="send", result="pending")
+        s.record(a)
+        assert len(s.pending_actions()) == 1
+
+        reloaded = EventStore(signing_key="k", storage_path=path)  # new worker/restart
+        assert len(reloaded.pending_actions()) == 1
+        reloaded.resolve(a.event_id, "approved", "boss@co")
+        assert len(reloaded.pending_actions()) == 0
+
+    def test_callback_persists_in_sqlite(self, tmp_path):
+        path = str(tmp_path / "d.db")
+        s = EventStore(signing_key="k", storage_path=path)
+        s.set_callback("evt-1", "http://agent/cb")
+        assert EventStore(signing_key="k", storage_path=path).get_callback("evt-1") == "http://agent/cb"
+
+    def test_callback_cleared(self, tmp_path):
+        s = EventStore(signing_key="k", storage_path=str(tmp_path / "d.db"))
+        s.set_callback("evt-1", "http://x")
+        s.clear_callback("evt-1")
+        assert s.get_callback("evt-1") == ""
+
+    def test_callback_jsonl_fallback(self, tmp_path):
+        s = EventStore(signing_key="k", storage_path=str(tmp_path / "d.jsonl"))
+        s.set_callback("evt-1", "http://x")
+        assert s.get_callback("evt-1") == "http://x"
+
+    def test_rate_limit_is_durable_across_engines(self, tmp_path):
+        path = str(tmp_path / "d.db")
+        store = EventStore(signing_key="k", storage_path=path)
+        for _ in range(3):
+            store.record(GateEvent(agent_id="ag", action_type="email", tool_name="send",
+                                   result="auto_allowed"))
+        # A brand-new engine (fresh worker) still sees the 3 prior actions.
+        engine = PolicyEngine(rules=[
+            PolicyRule(name="lim", action_type="email", decision="auto_allow", max_per_hour=3),
+        ])
+        engine.set_action_counter(store.count_recent_actions)
+        assert engine.evaluate("ag", "email", "send")["decision"] == "block"
+
+    def test_count_recent_excludes_decisions(self, tmp_path):
+        store = EventStore(signing_key="k", storage_path=str(tmp_path / "d.db"))
+        a = GateEvent(agent_id="ag", action_type="email", tool_name="send", result="pending")
+        store.record(a)
+        store.resolve(a.event_id, "approved", "boss@co")  # decision copies action_type/tool
+        # Only the action counts, not the approval decision.
+        assert store.count_recent_actions("ag", "email", "send", "2000-01-01T00:00:00+00:00") == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
