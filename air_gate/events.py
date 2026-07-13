@@ -50,8 +50,9 @@ class GateEvent(BaseModel):
     result_detail: str = ""
 
     # Chain integrity
-    previous_hash: str = ""  # HMAC of previous event (empty for first)
-    hmac_signature: str = ""  # HMAC of this event
+    signature_algorithm: str = "HMAC-SHA256"  # "HMAC-SHA256" or "Ed25519"
+    previous_hash: str = ""  # signature of previous event (empty for first)
+    hmac_signature: str = ""  # signature of this event (name kept for compat)
 
 
 class EventStore:
@@ -68,10 +69,32 @@ class EventStore:
     Backend is auto-detected from file extension, or set explicitly via backend param.
     """
 
-    def __init__(self, signing_key: str, storage_path: str = "gate_events.jsonl", backend: str = None):
-        self.signing_key = signing_key.encode("utf-8")
+    def __init__(
+        self,
+        signing_key: str = None,
+        storage_path: str = "gate_events.jsonl",
+        backend: str = None,
+        signer=None,
+    ):
+        """
+        Parameters
+        ----------
+        signing_key : str, optional
+            HMAC-SHA256 secret. Used when no explicit ``signer`` is given.
+        signer : Signer, optional
+            A signer from ``air_gate.signing`` (e.g. an ``Ed25519Signer`` for
+            asymmetric, publicly-verifiable signatures). Takes precedence over
+            ``signing_key``. Pass a verify-only signer to check an existing
+            chain without the power to forge it.
+        """
+        from .signing import HMACSigner
+        self._signer = signer or HMACSigner(signing_key or "change-me-in-production")
+        # Kept for backward compatibility (HMAC deployments referenced this).
+        self.signing_key = (signing_key or "change-me-in-production").encode("utf-8")
         self.storage_path = storage_path
         self.events: list[GateEvent] = []
+        # In-memory callback fallback (JSONL backend only; SQLite persists them).
+        self._callbacks: dict[str, str] = {}
 
         # Auto-detect backend from file extension
         if backend:
@@ -87,11 +110,28 @@ class EventStore:
 
         self._load_existing()
 
-    # ── HMAC Signing ────────────────────────────────────────────────
+    # ── Signing ─────────────────────────────────────────────────────
 
-    def _compute_hmac(self, event: GateEvent) -> str:
-        """Compute HMAC-SHA256 signature for an event."""
-        content = json.dumps(
+    @property
+    def algorithm(self) -> str:
+        """Signature algorithm this store signs/verifies with."""
+        return self._signer.algorithm
+
+    @property
+    def public_key_hex(self):
+        """
+        Public key (Ed25519) that a third party can use to verify this chain
+        without being able to forge it. None for HMAC (no public key exists).
+        """
+        return getattr(self._signer, "public_key_hex", None)
+
+    def _signed_content(self, event: GateEvent) -> bytes:
+        """
+        Canonical bytes that get signed. Note: ``signature_algorithm`` is
+        intentionally NOT included so that HMAC signatures remain byte-for-byte
+        compatible with chains created before signer support was added.
+        """
+        return json.dumps(
             {
                 "event_id": event.event_id,
                 "timestamp": event.timestamp,
@@ -108,8 +148,11 @@ class EventStore:
                 "previous_hash": event.previous_hash,
             },
             sort_keys=True,
-        )
-        return hmac.new(self.signing_key, content.encode("utf-8"), hashlib.sha256).hexdigest()
+        ).encode("utf-8")
+
+    def _compute_hmac(self, event: GateEvent) -> str:
+        """Sign an event with the configured signer (name kept for compat)."""
+        return self._signer.sign(self._signed_content(event))
 
     # ── Core Operations ─────────────────────────────────────────────
 
@@ -120,6 +163,7 @@ class EventStore:
         else:
             event.previous_hash = "GENESIS"
 
+        event.signature_algorithm = self._signer.algorithm
         event.hmac_signature = self._compute_hmac(event)
 
         self.events.append(event)
@@ -186,6 +230,35 @@ class EventStore:
                 resolved[e.related_event_id] = e.result
         return resolved
 
+    def pending_actions(self) -> list[GateEvent]:
+        """
+        Action events still awaiting a human decision. Derived from the chain,
+        so it survives restarts and is consistent across workers sharing the DB
+        (no in-memory pending list to lose).
+        """
+        resolved = self._resolved_results()
+        return [
+            e for e in self.events
+            if e.entry_type != "decision" and resolved.get(e.event_id) == "pending"
+        ]
+
+    def count_recent_actions(
+        self, agent_id: str, action_type: str, tool_name: str, since_iso: str
+    ) -> int:
+        """
+        Count action events matching (agent, action_type, tool) at or after
+        ``since_iso``. Used for durable, cross-worker rate limiting (decisions
+        are excluded so approvals don't inflate the count).
+        """
+        return sum(
+            1 for e in self.events
+            if e.entry_type != "decision"
+            and e.agent_id == agent_id
+            and e.action_type == action_type
+            and e.tool_name == tool_name
+            and e.timestamp >= since_iso
+        )
+
     def verify_chain(self) -> dict:
         """Verify the entire chain is intact. Returns verification report."""
         if not self.events:
@@ -194,8 +267,15 @@ class EventStore:
         errors = []
 
         for i, event in enumerate(self.events):
-            expected_hmac = self._compute_hmac(event)
-            if event.hmac_signature != expected_hmac:
+            # Reject algorithm downgrade/mismatch: every event must be signed
+            # with the algorithm this store verifies under. Prevents swapping a
+            # strong signature for one the verifier cannot actually check.
+            if event.signature_algorithm != self._signer.algorithm:
+                errors.append(
+                    f"Event {event.event_id}: algorithm mismatch "
+                    f"({event.signature_algorithm} != {self._signer.algorithm})"
+                )
+            elif not self._signer.verify(self._signed_content(event), event.hmac_signature):
                 errors.append(
                     f"Event {event.event_id}: signature mismatch (tampering detected)"
                 )
@@ -293,14 +373,67 @@ class EventStore:
                 payload TEXT DEFAULT '{}',
                 result TEXT DEFAULT 'pending',
                 result_detail TEXT DEFAULT '',
+                signature_algorithm TEXT DEFAULT 'HMAC-SHA256',
                 previous_hash TEXT DEFAULT '',
                 hmac_signature TEXT DEFAULT ''
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_result ON events(result)")
+        # Durable callback URLs for pending actions (survive restart / shared
+        # across workers), so a decision can still reach the waiting agent.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_callbacks (
+                event_id TEXT PRIMARY KEY,
+                callback_url TEXT NOT NULL
+            )
+        """)
+        # Migration: add signature_algorithm to DBs created before signer support.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(events)")]
+        if "signature_algorithm" not in cols:
+            conn.execute(
+                "ALTER TABLE events ADD COLUMN signature_algorithm TEXT DEFAULT 'HMAC-SHA256'"
+            )
         conn.commit()
         conn.close()
+
+    # ── Pending callback URLs ───────────────────────────────────────
+
+    def set_callback(self, event_id: str, callback_url: str):
+        """Persist the agent's callback URL for a pending action."""
+        if not callback_url:
+            return
+        if self._backend == "sqlite":
+            conn = sqlite3.connect(self.storage_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_callbacks (event_id, callback_url) VALUES (?, ?)",
+                (event_id, callback_url),
+            )
+            conn.commit()
+            conn.close()
+        else:
+            self._callbacks[event_id] = callback_url
+
+    def get_callback(self, event_id: str) -> str:
+        """Fetch the stored callback URL for an action (empty if none)."""
+        if self._backend == "sqlite":
+            conn = sqlite3.connect(self.storage_path)
+            row = conn.execute(
+                "SELECT callback_url FROM pending_callbacks WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            conn.close()
+            return row[0] if row else ""
+        return self._callbacks.get(event_id, "")
+
+    def clear_callback(self, event_id: str):
+        """Remove a callback once its action is resolved."""
+        if self._backend == "sqlite":
+            conn = sqlite3.connect(self.storage_path)
+            conn.execute("DELETE FROM pending_callbacks WHERE event_id = ?", (event_id,))
+            conn.commit()
+            conn.close()
+        else:
+            self._callbacks.pop(event_id, None)
 
     def _sqlite_persist(self, event: GateEvent):
         """Insert a single event into SQLite."""
@@ -309,15 +442,15 @@ class EventStore:
             """INSERT OR REPLACE INTO events
                (event_id, timestamp, entry_type, related_event_id, agent_id,
                 authorized_by, action_type, tool_name, input_context, payload,
-                result, result_detail, previous_hash, hmac_signature)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                result, result_detail, signature_algorithm, previous_hash, hmac_signature)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 event.event_id, event.timestamp, event.entry_type,
                 event.related_event_id, event.agent_id,
                 event.authorized_by, event.action_type, event.tool_name,
                 event.input_context, json.dumps(event.payload),
                 event.result, event.result_detail,
-                event.previous_hash, event.hmac_signature,
+                event.signature_algorithm, event.previous_hash, event.hmac_signature,
             ),
         )
         conn.commit()
@@ -332,15 +465,15 @@ class EventStore:
                 """INSERT INTO events
                    (event_id, timestamp, entry_type, related_event_id, agent_id,
                     authorized_by, action_type, tool_name, input_context, payload,
-                    result, result_detail, previous_hash, hmac_signature)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    result, result_detail, signature_algorithm, previous_hash, hmac_signature)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     event.event_id, event.timestamp, event.entry_type,
                     event.related_event_id, event.agent_id,
                     event.authorized_by, event.action_type, event.tool_name,
                     event.input_context, json.dumps(event.payload),
                     event.result, event.result_detail,
-                    event.previous_hash, event.hmac_signature,
+                    event.signature_algorithm, event.previous_hash, event.hmac_signature,
                 ),
             )
         conn.commit()

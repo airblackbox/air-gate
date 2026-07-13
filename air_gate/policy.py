@@ -44,7 +44,15 @@ class PolicyEngine:
     def __init__(self, rules: list[PolicyRule] = None, default: str = "require_approval"):
         self.rules = rules or []
         self.default_decision = default
-        self._action_counts: dict[str, list[float]] = {}  # for rate limiting
+        self._action_counts: dict[str, list[float]] = {}  # in-memory fallback
+        # Optional durable counter: (agent_id, action_type, tool_name, since_iso)
+        # -> int. When set (wired to the EventStore), rate limits survive
+        # restarts and are consistent across workers. See set_action_counter().
+        self._recent_action_counter = None
+
+    def set_action_counter(self, counter):
+        """Provide a durable recent-action counter (e.g. EventStore-backed)."""
+        self._recent_action_counter = counter
 
     def evaluate(self, agent_id: str, action_type: str, tool_name: str, payload: dict = None) -> dict:
         """
@@ -63,26 +71,44 @@ class PolicyEngine:
             if self._matches(rule, agent_id, action_type, tool_name):
                 # Check rate limit if configured
                 if rule.max_per_hour is not None:
-                    key = f"{agent_id}:{action_type}:{tool_name}"
-                    now = time.time()
-                    hour_ago = now - 3600
+                    if self._recent_action_counter is not None:
+                        # Durable path: count prior matching actions from the
+                        # store (survives restart, shared across workers). The
+                        # current attempt is recorded by the caller afterwards.
+                        from datetime import datetime, timedelta, timezone
+                        since_iso = (
+                            datetime.now(timezone.utc) - timedelta(hours=1)
+                        ).isoformat()
+                        count = self._recent_action_counter(
+                            agent_id, action_type, tool_name, since_iso
+                        )
+                        if count >= rule.max_per_hour:
+                            return {
+                                "decision": "block",
+                                "rule_name": rule.name,
+                                "reason": f"Rate limit exceeded: {rule.max_per_hour}/hour",
+                            }
+                    else:
+                        # In-memory fallback (single process only).
+                        key = f"{agent_id}:{action_type}:{tool_name}"
+                        now = time.time()
+                        hour_ago = now - 3600
 
-                    if key not in self._action_counts:
-                        self._action_counts[key] = []
+                        if key not in self._action_counts:
+                            self._action_counts[key] = []
 
-                    # Clean old entries
-                    self._action_counts[key] = [
-                        t for t in self._action_counts[key] if t > hour_ago
-                    ]
+                        self._action_counts[key] = [
+                            t for t in self._action_counts[key] if t > hour_ago
+                        ]
 
-                    if len(self._action_counts[key]) >= rule.max_per_hour:
-                        return {
-                            "decision": "block",
-                            "rule_name": rule.name,
-                            "reason": f"Rate limit exceeded: {rule.max_per_hour}/hour",
-                        }
+                        if len(self._action_counts[key]) >= rule.max_per_hour:
+                            return {
+                                "decision": "block",
+                                "rule_name": rule.name,
+                                "reason": f"Rate limit exceeded: {rule.max_per_hour}/hour",
+                            }
 
-                    self._action_counts[key].append(now)
+                        self._action_counts[key].append(now)
 
                 # Check payload size if configured
                 if rule.max_payload_size is not None and payload:

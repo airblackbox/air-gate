@@ -350,14 +350,26 @@ def run_demo(storage="sqlite"):
 
 # ─── Verify Command ───────────────────────────────────────────────
 
-def run_verify(path):
+def run_verify(path, public_key=None):
     """Verify an existing audit chain file."""
     if not os.path.exists(path):
         print(f"  {RED}Error:{RESET} File not found: {path}")
         sys.exit(1)
 
-    signing_key = os.getenv("GATE_SIGNING_KEY", "demo-signing-key-change-in-production")
-    store = EventStore(signing_key=signing_key, storage_path=path)
+    public_key = public_key or os.getenv("GATE_ED25519_PUBLIC_HEX")
+    if public_key:
+        # Ed25519: verify with only the public key (no forging power needed).
+        from .signing import Ed25519Signer
+        try:
+            signer = Ed25519Signer.from_public_hex(public_key)
+        except (ValueError, ImportError) as e:
+            print(f"  {RED}Error:{RESET} invalid Ed25519 public key: {e}")
+            sys.exit(1)
+        store = EventStore(signer=signer, storage_path=path)
+        print(f"\n  {DIM}Algorithm: Ed25519 (public-key verification){RESET}")
+    else:
+        signing_key = os.getenv("GATE_SIGNING_KEY", "demo-signing-key-change-in-production")
+        store = EventStore(signing_key=signing_key, storage_path=path)
 
     print(f"\n  {BOLD}Verifying audit chain:{RESET} {path}")
     print(f"  {DIM}Events loaded: {len(store.events)}{RESET}\n")
@@ -377,6 +389,28 @@ def run_verify(path):
     print()
 
 
+# ─── Keygen Command ───────────────────────────────────────────────
+
+def run_keygen():
+    """Generate an Ed25519 keypair for asymmetric audit-chain signing."""
+    try:
+        from .signing import Ed25519Signer
+        signer = Ed25519Signer.generate()
+    except ImportError:
+        print(f"  {RED}Error:{RESET} Ed25519 needs the 'cryptography' package.")
+        print(f"  Install it with: {CYAN}pip install air-gate[crypto]{RESET}")
+        sys.exit(1)
+
+    print(f"\n  {BOLD}Ed25519 keypair generated.{RESET}\n")
+    print(f"  {DIM}Private key (keep secret — signs the chain):{RESET}")
+    print(f"  {YELLOW}GATE_ED25519_PRIVATE_HEX={signer.private_key_hex}{RESET}\n")
+    print(f"  {DIM}Public key (share freely — verifies the chain):{RESET}")
+    print(f"  {GREEN}GATE_ED25519_PUBLIC_HEX={signer.public_key_hex}{RESET}\n")
+    print(f"  {DIM}Set GATE_SIGNATURE_ALGORITHM=Ed25519 and the private key on the")
+    print(f"  server; hand auditors only the public key to verify:{RESET}")
+    print(f"  {CYAN}air-gate verify chain.db --public-key {signer.public_key_hex}{RESET}\n")
+
+
 # ─── Main Entry Point ─────────────────────────────────────────────
 
 def main():
@@ -394,6 +428,13 @@ def main():
     # verify command
     verify_parser = subparsers.add_parser("verify", help="Verify an audit chain file")
     verify_parser.add_argument("path", help="Path to the audit chain file (.jsonl or .db)")
+    verify_parser.add_argument(
+        "--public-key",
+        help="Ed25519 public key (hex) to verify an asymmetrically-signed chain",
+    )
+
+    # keygen command
+    subparsers.add_parser("keygen", help="Generate an Ed25519 keypair for asymmetric signing")
 
     # version command
     subparsers.add_parser("version", help="Show version info")
@@ -404,7 +445,9 @@ def main():
         storage = "jsonl" if args.jsonl else "sqlite"
         run_demo(storage=storage)
     elif args.command == "verify":
-        run_verify(args.path)
+        run_verify(args.path, public_key=args.public_key)
+    elif args.command == "keygen":
+        run_keygen()
     elif args.command == "version":
         print(f"air-blackbox {__version__}")
     else:

@@ -74,6 +74,13 @@ PII_REDACTION = os.getenv("GATE_PII_REDACTION", "true").lower() in ("true", "1",
 PII_METHOD = os.getenv("GATE_PII_METHOD", "hash_sha256")
 CALLBACK_TIMEOUT = int(os.getenv("GATE_CALLBACK_TIMEOUT", "300"))
 
+# Signature algorithm for the audit chain. "HMAC-SHA256" (default, symmetric)
+# or "Ed25519" (asymmetric: verifiable with only the public key). For Ed25519,
+# provide GATE_ED25519_PRIVATE_HEX (32-byte hex seed) to sign.
+SIGNATURE_ALGORITHM = os.getenv("GATE_SIGNATURE_ALGORITHM", "HMAC-SHA256")
+ED25519_PRIVATE_HEX = os.getenv("GATE_ED25519_PRIVATE_HEX", "")
+ED25519_PUBLIC_HEX = os.getenv("GATE_ED25519_PUBLIC_HEX", "")
+
 # Shared secret required to approve/reject actions over the HTTP API. If unset,
 # the approval endpoints are UNAUTHENTICATED - anyone who can reach the server
 # can approve or reject on any human's behalf, which defeats the Article 14
@@ -112,7 +119,16 @@ def require_approver(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=401, detail="Invalid or missing approver token")
 
 # Initialize components
-event_store = EventStore(signing_key=SIGNING_KEY, storage_path=STORAGE_PATH)
+from .signing import build_signer
+_signer = build_signer(
+    signing_key=SIGNING_KEY,
+    algorithm=SIGNATURE_ALGORITHM,
+    ed25519_private_hex=ED25519_PRIVATE_HEX or None,
+    ed25519_public_hex=ED25519_PUBLIC_HEX or None,
+)
+event_store = EventStore(signer=_signer, storage_path=STORAGE_PATH)
+if _signer.algorithm == "Ed25519":
+    logger.info(f"Audit chain signing: Ed25519 (public key: {_signer.public_key_hex})")
 slack_bot = SlackBot()
 pii_redactor = PIIRedactor(method=RedactionMethod(PII_METHOD)) if PII_REDACTION else None
 
@@ -127,9 +143,13 @@ def load_policy() -> PolicyEngine:
         return PolicyEngine()
 
 policy_engine = load_policy()
+# Durable, multi-worker rate limiting: count prior actions from the audit chain
+# instead of a per-process in-memory counter.
+policy_engine.set_action_counter(event_store.count_recent_actions)
 
-# Track pending approvals (event_id → callback)
-pending_actions: dict[str, dict] = {}
+# Pending approvals and their callback URLs are derived from / persisted in the
+# event store (see event_store.pending_actions() and get/set/clear_callback),
+# so they survive restarts and are consistent across workers.
 
 
 # ── Request/Response Models ──────────────────────────────────────────
@@ -232,11 +252,7 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
     else:  # require_approval
         event.result = "pending"
         event_store.record(event)
-        pending_actions[event.event_id] = {
-            "event": event,
-            "action": action,
-            "callback_url": action.callback_url,
-        }
+        event_store.set_callback(event.event_id, action.callback_url)
         logger.info(f"PENDING APPROVAL: {action.agent_id} → {action.tool_name}")
 
         # Send to Slack in the background
@@ -262,8 +278,7 @@ async def submit_action(action: ActionRequest, background_tasks: BackgroundTasks
 
 async def _fire_callback(event_id: str, result: str, authorized_by: str):
     """Send decision to the agent's callback URL if one was provided."""
-    pending = pending_actions.get(event_id, {})
-    callback_url = pending.get("callback_url", "")
+    callback_url = event_store.get_callback(event_id)
     if not callback_url:
         return
     try:
@@ -294,7 +309,7 @@ async def approve_action(event_id: str, approval: ApprovalRequest, background_ta
     background_tasks.add_task(_fire_callback, event_id, "approved", approval.authorized_by)
 
     # Clean up pending
-    pending_actions.pop(event_id, None)
+    event_store.clear_callback(event_id)
 
     logger.info(f"APPROVED: {event.agent_id} → {event.tool_name} by {approval.authorized_by}")
     return {"status": "approved", "event_id": event_id, "authorized_by": approval.authorized_by}
@@ -315,7 +330,7 @@ async def reject_action(event_id: str, approval: ApprovalRequest, background_tas
     # Fire callback to waiting agent
     background_tasks.add_task(_fire_callback, event_id, "rejected", approval.authorized_by)
 
-    pending_actions.pop(event_id, None)
+    event_store.clear_callback(event_id)
 
     logger.info(f"REJECTED: {event.agent_id} → {event.tool_name} by {approval.authorized_by}")
     return {"status": "rejected", "event_id": event_id, "authorized_by": approval.authorized_by}
@@ -439,7 +454,7 @@ async def slack_interact(request: Request):
                 logger.warning(f"SLACK APPROVE for unknown event: {event_id}")
                 return {"response_type": "ephemeral", "text": "Unknown or already-resolved action."}
             await _fire_callback(event_id, "approved", user_name)
-            pending_actions.pop(event_id, None)
+            event_store.clear_callback(event_id)
             logger.info(f"SLACK APPROVED: {event_id} by {user_name}")
             return {"response_type": "in_channel", "text": f"✅ Approved by {user_name}"}
 
@@ -449,7 +464,7 @@ async def slack_interact(request: Request):
                 logger.warning(f"SLACK REJECT for unknown event: {event_id}")
                 return {"response_type": "ephemeral", "text": "Unknown or already-resolved action."}
             await _fire_callback(event_id, "rejected", user_name)
-            pending_actions.pop(event_id, None)
+            event_store.clear_callback(event_id)
             logger.info(f"SLACK REJECTED: {event_id} by {user_name}")
             return {"response_type": "in_channel", "text": f"❌ Rejected by {user_name}"}
 
@@ -472,5 +487,5 @@ async def health():
         "version": "0.1.0",
         "events_count": len(event_store.events),
         "chain_valid": chain["valid"],
-        "pending_approvals": len(pending_actions),
+        "pending_approvals": len(event_store.pending_actions()),
     }
