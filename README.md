@@ -4,7 +4,7 @@ Policy engine + human-in-the-loop tool gating + tamper-evident HMAC-SHA256 audit
 chain for AI agents. Helps satisfy EU AI Act Article 14 (Human Oversight) and
 Article 12 (Record-Keeping).
 
-**▶ [Try the live demo](https://airblackbox.ai/gate)** — run agent actions, approve one, then tamper with the log and watch verification fail. Runs entirely in your browser ([source](demo/)).
+**▶ [Try the live demo](https://airblackbox.ai/demo/gate)** — run agent actions, approve one, then tamper with the log and watch verification fail. Runs entirely in your browser. The version in [`demo/`](demo/) is a standalone, package-accurate build you can open or host yourself.
 
 ## Overview
 
