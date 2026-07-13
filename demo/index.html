@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>air-gate — live demo</title>
+<meta name="description" content="Interactive demo of air-gate: human-in-the-loop tool gating and a tamper-evident HMAC/Ed25519 audit chain for AI agents. Runs entirely in your browser.">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0a0a0b; --card: #111113; --card2: #17171a; --border: #27272a;
+    --text: #fafafa; --muted: #a1a1aa; --dim: #71717a;
+    --orange: #f97316; --green: #22c55e; --red: #ef4444;
+    --yellow: #eab308; --blue: #3b82f6; --purple: #a78bfa;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
+  a { color: var(--orange); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Header */
+  header { border-bottom: 1px solid var(--border); padding: 18px 0; position: sticky; top: 0; background: rgba(10,10,11,0.85); backdrop-filter: blur(8px); z-index: 20; }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .brand { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+  .brand span { color: var(--orange); }
+  .brand small { font-weight: 600; color: var(--dim); font-size: 13px; margin-left: 8px; }
+  header nav { display: flex; gap: 18px; font-size: 14px; align-items: center; }
+  header nav a { color: var(--muted); }
+
+  /* Hero */
+  .hero { padding: 48px 0 28px; }
+  .hero h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 800; letter-spacing: -0.02em; max-width: 760px; }
+  .hero h1 .g { color: var(--orange); }
+  .hero p { color: var(--muted); font-size: 17px; margin-top: 14px; max-width: 680px; }
+  .hero .note { margin-top: 14px; font-size: 13px; color: var(--dim); display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); padding: 6px 12px; border-radius: 999px; }
+  .hero .note b { color: var(--green); font-weight: 600; }
+
+  /* Layout */
+  .grid { display: grid; grid-template-columns: 340px 1fr; gap: 20px; padding-bottom: 60px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  .panel + .panel { margin-top: 20px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin-bottom: 14px; font-weight: 700; }
+  .sticky-col { position: sticky; top: 84px; }
+  @media (max-width: 860px) { .sticky-col { position: static; } }
+
+  /* Signing toggle */
+  .seg { display: flex; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 4px; gap: 4px; }
+  .seg button { flex: 1; background: transparent; border: 0; color: var(--muted); padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; transition: all .12s; }
+  .seg button.on { background: var(--card2); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+  .seg button.on[data-algo="Ed25519"] { color: var(--purple); }
+  .keyinfo { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .keyinfo .row { display: flex; gap: 8px; align-items: baseline; margin-top: 8px; }
+  .keyinfo .k { color: var(--dim); min-width: 82px; }
+  .keyinfo .v { color: var(--text); word-break: break-all; font-size: 11.5px; }
+  .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
+  .pill.sym { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .pill.asym { background: rgba(167,139,250,0.16); color: var(--purple); }
+
+  /* Action buttons */
+  .actions { display: flex; flex-direction: column; gap: 10px; }
+  .act { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: var(--card2); border: 1px solid var(--border); color: var(--text); padding: 12px 14px; border-radius: 10px; cursor: pointer; font-family: inherit; font-size: 14px; transition: all .12s; }
+  .act:hover { border-color: var(--dim); transform: translateY(-1px); }
+  .act .emoji { font-size: 18px; }
+  .act .meta { flex: 1; }
+  .act .meta .t { font-weight: 600; }
+  .act .meta .s { font-size: 12px; color: var(--dim); }
+  .act .verdict { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 7px; border-radius: 5px; }
+  .v-auto { background: rgba(34,197,94,0.15); color: var(--green); }
+  .v-appr { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .v-block { background: rgba(239,68,68,0.15); color: var(--red); }
+
+  .policy { margin-top: 4px; font-size: 12px; }
+  .policy table { width: 100%; border-collapse: collapse; }
+  .policy td { padding: 5px 0; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .policy td:last-child { text-align: right; }
+  .policy tr:last-child td { border-bottom: 0; }
+  code.k { background: rgba(249,115,22,0.1); color: var(--orange); padding: 1px 6px; border-radius: 4px; font-family: 'SF Mono', monospace; font-size: 11.5px; }
+
+  /* Verify bar */
+  .verifybar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px; border-radius: 12px; font-weight: 600; margin-bottom: 18px; border: 1px solid transparent; }
+  .verifybar.valid { background: rgba(34,197,94,0.09); border-color: rgba(34,197,94,0.25); color: var(--green); }
+  .verifybar.invalid { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: var(--red); }
+  .verifybar .left { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+  .verifybar .ic { font-size: 18px; }
+  .btn { background: var(--card2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; transition: all .12s; }
+  .btn:hover { border-color: var(--dim); }
+  .btn.ghost { background: transparent; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+
+  /* Chain */
+  .chain { display: flex; flex-direction: column; }
+  .empty { text-align: center; padding: 48px 20px; color: var(--dim); border: 1px dashed var(--border); border-radius: 12px; }
+  .link { height: 18px; width: 2px; background: linear-gradient(var(--border), var(--border)); margin-left: 26px; }
+  .link.broken { background: repeating-linear-gradient(var(--red) 0 4px, transparent 4px 8px); }
+
+  .evt { display: flex; gap: 14px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; position: relative; }
+  .evt.tampered { border-color: var(--red); box-shadow: 0 0 0 1px rgba(239,68,68,0.4); }
+  .evt.decision { border-style: dashed; background: var(--card2); }
+  .evt .idx { width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; background: var(--card2); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: var(--dim); }
+  .evt.decision .idx { background: rgba(167,139,250,0.12); color: var(--purple); border-color: rgba(167,139,250,0.25); }
+  .evt .body { flex: 1; min-width: 0; }
+  .evt .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .evt .who { font-weight: 600; font-size: 14px; }
+  .evt .arrow { color: var(--dim); }
+  .evt .tool { color: var(--muted); font-size: 13px; }
+  .kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 6px; border-radius: 4px; background: var(--border); color: var(--muted); }
+  .kind.decision { background: rgba(167,139,250,0.15); color: var(--purple); }
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+  .badge.approved, .badge.auto_allowed { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge.blocked, .badge.rejected { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge.pending { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .evt .payload { margin-top: 8px; font-size: 12px; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
+  .evt .sig { margin-top: 8px; font-size: 11px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  .evt .sig b { color: var(--muted); font-weight: 600; }
+  .evt .sig .bad { color: var(--red); }
+  .evt .ops { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .evt .ops .btn { padding: 5px 10px; font-size: 12px; }
+  .btn.approve { border-color: rgba(34,197,94,0.3); color: var(--green); }
+  .btn.reject { border-color: rgba(239,68,68,0.3); color: var(--red); }
+  .btn.tamper { border-color: rgba(239,68,68,0.25); color: var(--red); }
+  .btn.tamper:hover { background: rgba(239,68,68,0.08); }
+
+  .footer { border-top: 1px solid var(--border); padding: 28px 0 60px; color: var(--dim); font-size: 13px; }
+  .footer .badges { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .footer .abadge { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--muted); }
+  .footer .abadge b { color: var(--text); font-weight: 600; }
+  .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--card2); border: 1px solid var(--border); color: var(--text); padding: 11px 18px; border-radius: 10px; font-size: 13.5px; opacity: 0; transition: all .25s; pointer-events: none; z-index: 50; box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .banner { display:none; background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.25); color: var(--yellow); font-size: 12.5px; padding: 8px 12px; border-radius: 8px; margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="brand">AIR <span>Blackbox</span> <small>air-gate live demo</small></div>
+    <nav>
+      <a href="https://github.com/airblackbox/air-gate" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://pypi.org/project/air-gate/" target="_blank" rel="noopener">PyPI</a>
+      <a href="https://airblackbox.ai" target="_blank" rel="noopener">airblackbox.ai</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Watch an AI agent get <span class="g">gated</span>, approved, and caught tampering.</h1>
+    <p>air-gate sits between an AI agent and its tools. Risky actions pause for human approval, and every decision is written to a tamper-evident audit chain. Try it: run some agent actions, approve one, then tamper with the log and hit verify.</p>
+    <div class="note">🔒 <b>100% in your browser.</b>&nbsp; Real HMAC-SHA256 &amp; Ed25519 signing via Web Crypto. No server, nothing leaves this page.</div>
+  </div>
+</section>
+
+<div class="wrap">
+  <div class="grid">
+    <!-- LEFT: controls -->
+    <div class="sticky-col">
+      <div class="panel">
+        <h2>Signing algorithm</h2>
+        <div class="seg" id="algoSeg">
+          <button class="on" data-algo="HMAC-SHA256" onclick="setAlgo('HMAC-SHA256')">HMAC-SHA256</button>
+          <button data-algo="Ed25519" onclick="setAlgo('Ed25519')">Ed25519</button>
+        </div>
+        <div class="keyinfo" id="keyInfo"></div>
+        <div class="banner" id="edBanner">This browser has no native Ed25519 in Web Crypto — falling back to HMAC for signing. The concept still applies: with Ed25519 the public key verifies without being able to forge.</div>
+      </div>
+
+      <div class="panel">
+        <h2>Agent wants to…</h2>
+        <div class="actions" id="actionBtns"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Policy (first match wins)</h2>
+        <div class="policy">
+          <table id="policyTable"></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: chain -->
+    <div>
+      <div class="verifybar valid" id="verifyBar">
+        <div class="left"><span class="ic">✓</span><span id="verifyText">Chain intact — 0 events</span></div>
+        <button class="btn" onclick="runVerify(true)">Verify chain</button>
+      </div>
+      <div class="toolbar">
+        <button class="btn ghost" onclick="seedDemo()">▶ Run sample scenario</button>
+        <button class="btn ghost" onclick="resetChain()">↺ Reset</button>
+      </div>
+      <div class="chain" id="chain"></div>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="badges">
+      <div class="abadge"><b>Art. 14</b> · Human oversight — approval gates</div>
+      <div class="abadge"><b>Art. 12</b> · Record-keeping — signed audit chain</div>
+      <div class="abadge"><b>Art. 9</b> · Risk management — policy engine</div>
+      <div class="abadge"><b>Art. 15</b> · Robustness — action blocking</div>
+    </div>
+    <div>
+      This page faithfully re-implements air-gate's append-only chain, policy engine, and signing in JavaScript.
+      The real thing is a <code class="mono">pip install air-gate</code> away — <a href="https://github.com/airblackbox/air-gate">source on GitHub</a>.
+      Part of the <a href="https://airblackbox.ai">AIR Blackbox</a> EU AI Act toolkit.
+    </div>
+  </div>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ───────────────────────────────────────────────────────────────────────
+   air-gate demo — a faithful in-browser port of the Python engine.
+
+   Mirrors:
+     air_gate/policy.py   → POLICY + evaluate()
+     air_gate/events.py   → signedContent(), record(), resolve(), verifyChain()
+     air_gate/signing.py  → HMAC-SHA256 (default) and Ed25519 signers
+
+   The signing is REAL (Web Crypto), the chaining is append-only, and
+   approvals append a new signed `decision` event rather than mutating the
+   original — exactly like the shipped package (v0.3.0).
+──────────────────────────────────────────────────────────────────────── */
+
+const AGENT = "recruiting-agent-001";
+
+// Mirror of gate_config.yaml — first match wins, default require_approval.
+const POLICY = {
+  default: "require_approval",
+  rules: [
+    { name: "allow-search",   action_type: "search",    decision: "auto_allow", desc: "Search doesn't modify data" },
+    { name: "allow-read",     action_type: "db_read",    decision: "auto_allow", desc: "Read-only queries are safe" },
+    { name: "block-delete",   action_type: "db_delete",  decision: "block",      desc: "AI never deletes data" },
+    { name: "approve-email",  action_type: "email",      decision: "require_approval", desc: "Outbound email needs a human" },
+    { name: "approve-write",  action_type: "db_write",   decision: "require_approval", desc: "DB writes need a human" },
+  ],
+};
+
+// Preset agent actions the visitor can trigger.
+const ACTIONS = [
+  { emoji: "🔍", action_type: "search",   tool_name: "linkedin_search",
+    label: "Search for candidates", payload: { query: "senior data engineer", location: "SF" },
+    input_context: "User: find senior data engineers in SF" },
+  { emoji: "✉️", action_type: "email",    tool_name: "send_email",
+    label: "Send an outreach email", payload: { to: "jane.doe@example.com", subject: "Senior DE opportunity", body: "Hi Jane, loved your work on real-time pipelines…" },
+    input_context: "Matched Jane Doe as 92% fit (Kafka)" },
+  { emoji: "💾", action_type: "db_write", tool_name: "update_crm",
+    label: "Write to the CRM", payload: { table: "candidates", set: { stage: "contacted" }, id: 4821 },
+    input_context: "Advance Jane to 'contacted'" },
+  { emoji: "🗑️", action_type: "db_delete", tool_name: "delete_records",
+    label: "Delete rejected records", payload: { table: "candidates", filter: "status='rejected'", count: 150 },
+    input_context: "Clean up rejected candidates" },
+];
+
+// ── Signing layer ──────────────────────────────────────────────────────
+let ALGO = "HMAC-SHA256";
+let hmacKey = null;            // CryptoKey
+let edPriv = null, edPub = null, edPubHex = "";
+let edSupported = true;
+
+const HMAC_SECRET = "demo-signing-key-change-in-production";
+
+function hex(buf) {
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+function fromHex(h) {
+  const a = new Uint8Array(h.length / 2);
+  for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16);
+  return a;
+}
+const enc = new TextEncoder();
+
+async function initKeys() {
+  hmacKey = await crypto.subtle.importKey(
+    "raw", enc.encode(HMAC_SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]
+  );
+  try {
+    const kp = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    edPriv = kp.privateKey; edPub = kp.publicKey;
+    edPubHex = hex(await crypto.subtle.exportKey("raw", edPub));
+  } catch (e) {
+    edSupported = false;
+    document.getElementById("edBanner").style.display = "block";
+  }
+}
+
+// Canonical bytes to sign — mirrors events.py _signed_content (sorted keys).
+function canonical(obj) {
+  if (Array.isArray(obj)) return "[" + obj.map(canonical).join(",") + "]";
+  if (obj && typeof obj === "object") {
+    return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonical(obj[k])).join(",") + "}";
+  }
+  return JSON.stringify(obj);
+}
+function signedContent(ev) {
+  return enc.encode(canonical({
+    event_id: ev.event_id, timestamp: ev.timestamp, entry_type: ev.entry_type,
+    related_event_id: ev.related_event_id, agent_id: ev.agent_id,
+    action_type: ev.action_type, tool_name: ev.tool_name, input_context: ev.input_context,
+    payload: ev.payload, result: ev.result, result_detail: ev.result_detail,
+    authorized_by: ev.authorized_by, previous_hash: ev.previous_hash,
+  }));
+}
+async function sign(bytes) {
+  if (ALGO === "Ed25519" && edSupported)
+    return hex(await crypto.subtle.sign({ name: "Ed25519" }, edPriv, bytes));
+  return hex(await crypto.subtle.sign("HMAC", hmacKey, bytes));
+}
+async function verifySig(bytes, sigHex, algo) {
+  try {
+    if (algo === "Ed25519" && edSupported)
+      return await crypto.subtle.verify({ name: "Ed25519" }, edPub, fromHex(sigHex), bytes);
+    return await crypto.subtle.verify("HMAC", hmacKey, fromHex(sigHex), bytes);
+  } catch { return false; }
+}
+
+// ── The chain ──────────────────────────────────────────────────────────
+let CHAIN = [];
+let clock = 0;
+function nowISO() { // deterministic-ish timestamps for the demo
+  const base = new Date("2026-07-13T14:30:00Z").getTime();
+  return new Date(base + (clock++) * 47000).toISOString();
+}
+
+function evaluate(action_type) {
+  for (const r of POLICY.rules) {
+    if (r.action_type === action_type)
+      return { decision: r.decision, rule_name: r.name, reason: r.desc };
+  }
+  return { decision: POLICY.default, rule_name: "default", reason: "No rule matched — default policy" };
+}
+
+async function record(ev) {
+  ev.previous_hash = CHAIN.length ? CHAIN[CHAIN.length - 1].hmac_signature : "GENESIS";
+  ev.signature_algorithm = ALGO;
+  ev.hmac_signature = await sign(signedContent(ev));
+  CHAIN.push(ev);
+  return ev;
+}
+
+async function submitAction(a) {
+  const dec = evaluate(a.action_type);
+  const ev = {
+    event_id: crypto.randomUUID(), timestamp: nowISO(), entry_type: "action",
+    related_event_id: "", agent_id: AGENT, authorized_by: "pending",
+    action_type: a.action_type, tool_name: a.tool_name, input_context: a.input_context,
+    payload: structuredClone(a.payload), result: "pending", result_detail: "",
+  };
+  if (dec.decision === "auto_allow") { ev.result = "auto_allowed"; ev.authorized_by = "auto-policy"; }
+  else if (dec.decision === "block") { ev.result = "blocked"; ev.authorized_by = "auto-policy"; ev.result_detail = dec.reason; }
+  else { ev.result = "pending"; }
+  await record(ev);
+  const verb = { auto_allowed: "auto-allowed", blocked: "blocked", pending: "held for approval" }[ev.result];
+  toast(`${a.tool_name} → ${verb} · ${dec.rule_name}`);
+  await runVerify(false);
+  render();
+}
+
+// Approvals APPEND a signed decision event (append-only) — never mutate.
+async function resolve(actionId, result, who) {
+  const action = CHAIN.find(e => e.event_id === actionId);
+  if (!action) return;
+  const d = {
+    event_id: crypto.randomUUID(), timestamp: nowISO(), entry_type: "decision",
+    related_event_id: actionId, agent_id: action.agent_id, authorized_by: who,
+    action_type: action.action_type, tool_name: action.tool_name,
+    input_context: action.input_context, payload: {}, result,
+    result_detail: result === "approved" ? "Looks good — send it." : "Not appropriate.",
+  };
+  await record(d);
+  toast(`${result === "approved" ? "✅ Approved" : "❌ Rejected"} by ${who} — decision appended`);
+  await runVerify(false);
+  render();
+}
+
+function effectiveResult(action) {
+  let r = action.result;
+  for (const e of CHAIN)
+    if (e.entry_type === "decision" && e.related_event_id === action.event_id) r = e.result;
+  return r;
+}
+
+// Tamper: edit a stored event WITHOUT re-signing (an attacker has no key).
+function tamper(id) {
+  const ev = CHAIN.find(e => e.event_id === id);
+  if (!ev) return;
+  if (ev.payload.to) ev.payload.to = "attacker@evil.com";
+  else if (ev.payload.query) ev.payload.query = "exfiltrate all data";
+  else if (ev.payload.set) ev.payload.set = { stage: "deleted" };
+  else ev.payload.tampered = true;
+  ev._tampered = true;
+  toast("😈 Log edited on disk — now verify the chain…");
+  runVerify(false); render();
+}
+
+async function runVerify(announce) {
+  const errors = [];
+  for (let i = 0; i < CHAIN.length; i++) {
+    const ev = CHAIN[i];
+    if (ev.signature_algorithm !== ALGO)
+      errors.push({ i, msg: `algorithm mismatch (${ev.signature_algorithm} ≠ ${ALGO})` });
+    else if (!(await verifySig(signedContent(ev), ev.hmac_signature, ev.signature_algorithm)))
+      errors.push({ i, msg: "signature mismatch — tampering detected" });
+    else if (ev.previous_hash !== (i === 0 ? "GENESIS" : CHAIN[i - 1].hmac_signature))
+      errors.push({ i, msg: "chain broken — previous hash mismatch" });
+  }
+  window._verifyErrors = errors;
+  const bar = document.getElementById("verifyBar");
+  const txt = document.getElementById("verifyText");
+  if (errors.length === 0) {
+    bar.className = "verifybar valid";
+    bar.querySelector(".ic").textContent = "✓";
+    txt.textContent = `Chain intact — ${CHAIN.length} event${CHAIN.length === 1 ? "" : "s"} verified`;
+  } else {
+    bar.className = "verifybar invalid";
+    bar.querySelector(".ic").textContent = "✕";
+    txt.textContent = `TAMPERING DETECTED — event #${errors[0].i + 1}: ${errors[0].msg}`;
+  }
+  if (announce) toast(errors.length ? "Verification failed — chain is compromised" : "Verification passed — chain is intact");
+  render();
+}
+
+// ── Rendering ──────────────────────────────────────────────────────────
+function badgeFor(r) { return `<span class="badge ${r}">${r.replace("_", "-")}</span>`; }
+
+function render() {
+  const errs = window._verifyErrors || [];
+  const errIdx = new Set(errs.map(e => e.i));
+  const el = document.getElementById("chain");
+  if (!CHAIN.length) {
+    el.innerHTML = `<div class="empty">No events yet. Trigger an agent action on the left, or <a href="#" onclick="seedDemo();return false">run the sample scenario</a>.</div>`;
+    return;
+  }
+  let html = "";
+  CHAIN.forEach((ev, i) => {
+    if (i > 0) html += `<div class="link ${errIdx.has(i) ? "broken" : ""}"></div>`;
+    const eff = ev.entry_type === "action" ? effectiveResult(ev) : ev.result;
+    const isPending = ev.entry_type === "action" && effectiveResult(ev) === "pending";
+    const tampered = ev._tampered;
+    const sigOk = !errIdx.has(i);
+    html += `
+      <div class="evt ${ev.entry_type} ${tampered ? "tampered" : ""}">
+        <div class="idx">${i + 1}</div>
+        <div class="body">
+          <div class="top">
+            <span class="kind ${ev.entry_type}">${ev.entry_type}</span>
+            <span class="who">${ev.agent_id}</span>
+            <span class="arrow">→</span>
+            <span class="tool mono">${ev.action_type}:${ev.tool_name}</span>
+            ${badgeFor(ev.entry_type === "action" ? eff : ev.result)}
+          </div>
+          ${ev.entry_type === "decision"
+            ? `<div class="payload">↳ resolves event #${CHAIN.findIndex(e => e.event_id === ev.related_event_id) + 1} · by ${ev.authorized_by} · "${ev.result_detail}"</div>`
+            : `<div class="payload">${JSON.stringify(ev.payload)}</div>`}
+          <div class="sig">
+            <span><b>sig</b> (${ev.signature_algorithm}): <span class="mono ${sigOk ? "" : "bad"}">${ev.hmac_signature.slice(0, 40)}…</span> ${sigOk ? "" : "✕ invalid"}</span>
+            <span><b>prev</b>: <span class="mono">${ev.previous_hash === "GENESIS" ? "GENESIS" : ev.previous_hash.slice(0, 40) + "…"}</span></span>
+          </div>
+          <div class="ops">
+            ${isPending ? `
+              <button class="btn approve" onclick="resolve('${ev.event_id}','approved','jason@airblackbox.ai')">✓ Approve</button>
+              <button class="btn reject" onclick="resolve('${ev.event_id}','rejected','jason@airblackbox.ai')">✕ Reject</button>` : ""}
+            ${ev.entry_type === "action" && !tampered ? `<button class="btn tamper" onclick="tamper('${ev.event_id}')">😈 Tamper with this event</button>` : ""}
+          </div>
+        </div>
+      </div>`;
+  });
+  el.innerHTML = html;
+}
+
+function renderControls() {
+  document.getElementById("actionBtns").innerHTML = ACTIONS.map((a, i) => {
+    const dec = evaluate(a.action_type);
+    const cls = dec.decision === "auto_allow" ? "v-auto" : dec.decision === "block" ? "v-block" : "v-appr";
+    const label = dec.decision === "auto_allow" ? "auto" : dec.decision === "block" ? "block" : "approval";
+    return `<button class="act" onclick="submitAction(ACTIONS[${i}])">
+      <span class="emoji">${a.emoji}</span>
+      <span class="meta"><span class="t">${a.label}</span><br><span class="s mono">${a.action_type}:${a.tool_name}</span></span>
+      <span class="verdict ${cls}">${label}</span>
+    </button>`;
+  }).join("");
+
+  document.getElementById("policyTable").innerHTML = POLICY.rules.map(r =>
+    `<tr><td><code class="k">${r.action_type}</code></td><td>${r.decision.replace("_", " ")}</td></tr>`
+  ).join("") + `<tr><td><code class="k">*</code> default</td><td>${POLICY.default.replace("_", " ")}</td></tr>`;
+}
+
+function renderKeyInfo() {
+  const el = document.getElementById("keyInfo");
+  if (ALGO === "HMAC-SHA256") {
+    el.innerHTML = `<span class="pill sym">symmetric</span>
+      <div class="row"><span class="k">signs & verifies</span><span class="v">one shared secret</span></div>
+      <div class="row"><span class="k">who can forge</span><span class="v">anyone holding the secret</span></div>
+      <div style="margin-top:10px;color:var(--dim)">Great for a single trusted service. Proves integrity to anyone who <i>doesn't</i> hold the key.</div>`;
+  } else {
+    el.innerHTML = `<span class="pill asym">asymmetric</span>
+      <div class="row"><span class="k">signs</span><span class="v">private key (this server)</span></div>
+      <div class="row"><span class="k">verifies</span><span class="v mono">${(edPubHex || "").slice(0, 32)}…</span></div>
+      <div style="margin-top:10px;color:var(--dim)">An auditor verifies with the <b style="color:var(--purple)">public key</b> — proving integrity without any power to forge. This is what makes the chain court-defensible evidence.</div>`;
+  }
+}
+
+// ── Scenario + misc ────────────────────────────────────────────────────
+async function seedDemo() {
+  resetChain();
+  await submitAction(ACTIONS[0]);           // search → auto
+  await submitAction(ACTIONS[1]);           // email → pending
+  const pending = CHAIN.find(e => e.entry_type === "action" && e.result === "pending");
+  if (pending) await resolve(pending.event_id, "approved", "jason@airblackbox.ai");
+  await submitAction(ACTIONS[3]);           // delete → blocked
+  toast("Sample scenario loaded — now try tampering, then Verify");
+}
+function resetChain() { CHAIN = []; clock = 0; window._verifyErrors = []; runVerify(false); render(); }
+
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+function setAlgo(algo) {
+  if (algo === "Ed25519" && !edSupported) algo = "HMAC-SHA256";
+  ALGO = algo;
+  document.querySelectorAll("#algoSeg button").forEach(b => b.classList.toggle("on", b.dataset.algo === algo));
+  renderKeyInfo();
+  if (CHAIN.length) toast(`Switched to ${algo} — re-sign by resetting, or verify to see the algorithm check`);
+  runVerify(false);
+}
+
+(async function main() {
+  await initKeys();
+  renderControls();
+  renderKeyInfo();
+  render();
+  runVerify(false);
+})();
+</script>
+</body>
+</html>
