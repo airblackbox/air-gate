@@ -338,7 +338,7 @@ def run_demo(storage="sqlite"):
     print(f"  and {BOLD}chained{RESET} into a tamper-evident audit trail.")
     print()
     print(f"  {BOLD}Next steps:{RESET}")
-    print(f"  1. Add to your own agent:  {CYAN}from gate import GateClient{RESET}")
+    print(f"  1. Add to your own agent:  {CYAN}from air_gate import GateClient{RESET}")
     print(f"  2. Start the full server:  {CYAN}pip install air-gate[server]{RESET}")
     print(f"     Then:                   {CYAN}uvicorn gate.proxy:app --reload{RESET}")
     print(f"  3. View docs:              {CYAN}https://airblackbox.ai/gate{RESET}")

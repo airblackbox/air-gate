@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM deps AS app
 
 # Copy application code
-COPY gate/ ./gate/
+COPY air_gate/ ./air_gate/
 COPY gate_config.yaml .
 COPY pyproject.toml .
 
@@ -42,4 +42,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "gate.proxy:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+CMD ["uvicorn", "air_gate.proxy:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]

@@ -192,7 +192,7 @@ class TestPolicyEngine:
 class TestClientWait:
 
     def _client(self, tmp_path):
-        from gate.client import GateClient
+        from air_gate.client import GateClient
         return GateClient(
             storage_path=str(tmp_path / "c.db"),
             policy_config={
@@ -224,7 +224,7 @@ class TestClientWait:
         assert gate.wait_for_decision(r["event_id"], timeout=0.3, poll_interval=0.05) == "pending"
 
     def test_gated_tool_fails_closed_without_approval(self, tmp_path):
-        from gate.integrations.langchain import GatedTool
+        from air_gate.integrations.langchain import GatedTool
 
         class FakeTool:
             name = "send"

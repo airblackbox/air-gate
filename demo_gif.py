@@ -9,13 +9,13 @@ import time
 import tempfile
 import json
 
-# Ensure we can import gate
+# Ensure we can import air_gate
 sys.path.insert(0, os.path.dirname(__file__))
 
-from gate.events import EventStore, GateEvent
-from gate.policy import PolicyEngine, PolicyRule
-from gate.pii import PIIRedactor, RedactionMethod
-from gate.client import GateClient
+from air_gate.events import EventStore, GateEvent
+from air_gate.policy import PolicyEngine, PolicyRule
+from air_gate.pii import PIIRedactor, RedactionMethod
+from air_gate.client import GateClient
 
 # Colors
 B = "\033[1m"
@@ -162,7 +162,7 @@ time.sleep(0.5)
 # ── NEXT STEPS ──────────────────────────────────────────────
 p(f"  {B}Get started:{R}")
 p(f"  {C}pip install air-gate{R}")
-p(f"  {C}from gate import GateClient{R}")
+p(f"  {C}from air_gate import GateClient{R}")
 p(f"")
 p(f"  {D}GitHub: github.com/airblackbox/air-gate{R}")
 p(f"  {D}Docs:   airblackbox.ai/gate{R}")

@@ -8,7 +8,7 @@ Usage:
 
     from openai import OpenAI
     from air_gate.integrations.openai_agents import gated_tool
-    from gate import GateClient
+    from air_gate import GateClient
 
     gate = GateClient()  # local mode, or GateClient(server_url="...")
 

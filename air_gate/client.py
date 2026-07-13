@@ -12,7 +12,7 @@ Two modes:
 
 Usage (local mode - zero config):
 
-    from gate import GateClient
+    from air_gate import GateClient
 
     gate = GateClient()
 
