@@ -350,6 +350,18 @@ async def get_event(event_id: str):
     raise HTTPException(status_code=404, detail="Event not found")
 
 
+@app.get("/actions/{event_id}/status")
+async def action_status(event_id: str):
+    """
+    Effective status of an action, resolving any appended approve/reject
+    decision. Agents poll this to wait for a human decision on a pending action.
+    """
+    result = event_store.current_result(event_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return {"event_id": event_id, "result": result, "resolved": result != "pending"}
+
+
 @app.get("/verify")
 async def verify_chain():
     """Verify the entire audit chain is intact (no tampering)."""

@@ -1,7 +1,7 @@
 """
 gate/client.py
 
-GateClient — the simplest way to add Gate to any AI agent.
+GateClient - the simplest way to add Gate to any AI agent.
 
 Two modes:
   1. Local mode (no server): Events are signed and stored locally.
@@ -10,7 +10,7 @@ Two modes:
   2. Server mode: Events are sent to a running Gate proxy.
      Use this when you need Slack approvals or multi-agent setups.
 
-Usage (local mode — zero config):
+Usage (local mode - zero config):
 
     from gate import GateClient
 
@@ -28,7 +28,7 @@ Usage (local mode — zero config):
     # Verify the audit chain anytime
     print(gate.verify())
 
-Usage (server mode — Slack approvals):
+Usage (server mode - Slack approvals):
 
     gate = GateClient(server_url="http://localhost:8000")
 
@@ -75,10 +75,10 @@ class GateClient:
         self.server_url = server_url
 
         if server_url:
-            # Server mode — we just need httpx
+            # Server mode - we just need httpx
             self._mode = "server"
         else:
-            # Local mode — initialize everything in-process
+            # Local mode - initialize everything in-process
             self._mode = "local"
             key = signing_key or os.getenv("GATE_SIGNING_KEY", "change-me-in-production")
             self._store = EventStore(signing_key=key, storage_path=storage_path)
@@ -128,7 +128,7 @@ class GateClient:
             return self._check_local(agent_id, action_type, tool_name, payload, input_context)
 
     def _check_local(self, agent_id, action_type, tool_name, payload, input_context) -> dict:
-        """Evaluate locally — no server needed."""
+        """Evaluate locally - no server needed."""
         decision = self._policy.evaluate(
             agent_id=agent_id,
             action_type=action_type,
@@ -156,8 +156,13 @@ class GateClient:
 
         self._store.record(event)
 
+        # Normalize to the same vocabulary the server returns so callers (and
+        # the framework wrappers) can treat both modes identically. Internally
+        # the event's result stays "pending"; the response says "pending_approval".
+        decision_out = "pending_approval" if event.result == "pending" else event.result
+
         return {
-            "decision": event.result,
+            "decision": decision_out,
             "event_id": event.event_id,
             "rule_name": decision["rule_name"],
             "reason": decision["reason"],
@@ -185,7 +190,7 @@ class GateClient:
         return response.json()
 
     def approve(self, event_id: str, authorized_by: str, comment: str = "") -> dict:
-        """Approve a pending action (local mode only — server mode uses Slack)."""
+        """Approve a pending action (local mode only - server mode uses Slack)."""
         if self._mode == "server":
             import httpx
             r = httpx.post(f"{self.server_url}/actions/{event_id}/approve",
@@ -207,6 +212,70 @@ class GateClient:
         else:
             event = self._store.update_result(event_id, "rejected", authorized_by, comment)
             return {"status": "rejected", "event_id": event_id} if event else {"error": "not found"}
+
+    # Terminal outcomes: once an action reaches one of these it will not change.
+    _TERMINAL = frozenset({"approved", "rejected", "blocked", "auto_allowed"})
+
+    def status(self, event_id: str) -> Optional[str]:
+        """
+        Current effective result of an action ("pending" until resolved), or
+        None if the event is unknown. Reflects the latest approval/rejection.
+        """
+        if self._mode == "server":
+            import httpx
+            r = httpx.get(f"{self.server_url}/actions/{event_id}/status")
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json().get("result")
+        return self._store.current_result(event_id)
+
+    def wait_for_decision(
+        self,
+        event_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+    ) -> str:
+        """
+        Block until a pending action is resolved, then return its final result.
+
+        Polls until the action reaches a terminal state (approved, rejected,
+        blocked, auto_allowed) or ``timeout`` seconds elapse. On timeout returns
+        "pending" so callers can fail closed (do not execute the tool).
+        """
+        import time as _time
+        deadline = _time.monotonic() + timeout
+        while True:
+            result = self.status(event_id)
+            if result in self._TERMINAL:
+                return result
+            if _time.monotonic() >= deadline:
+                return result or "pending"
+            _time.sleep(min(poll_interval, max(0.0, deadline - _time.monotonic())))
+
+    async def await_decision(
+        self,
+        event_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 1.0,
+    ) -> str:
+        """Async variant of :meth:`wait_for_decision` (does not block the loop)."""
+        import asyncio
+        import time as _time
+        deadline = _time.monotonic() + timeout
+        while True:
+            if self._mode == "server":
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(f"{self.server_url}/actions/{event_id}/status")
+                    result = None if r.status_code == 404 else r.json().get("result")
+            else:
+                result = self._store.current_result(event_id)
+            if result in self._TERMINAL:
+                return result
+            if _time.monotonic() >= deadline:
+                return result or "pending"
+            await asyncio.sleep(min(poll_interval, max(0.0, deadline - _time.monotonic())))
 
     def verify(self) -> dict:
         """Verify the audit chain integrity."""

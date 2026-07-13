@@ -187,5 +187,61 @@ class TestPolicyEngine:
         assert engine.evaluate("a", "email", "send")["decision"] == "block"
 
 
+# ── Client / HITL wait Tests ──────────────────────────────────────────
+
+class TestClientWait:
+
+    def _client(self, tmp_path):
+        from gate.client import GateClient
+        return GateClient(
+            storage_path=str(tmp_path / "c.db"),
+            policy_config={
+                "default": "require_approval",
+                "rules": [
+                    {"name": "emails", "action_type": "email", "decision": "require_approval"},
+                    {"name": "search", "action_type": "search", "decision": "auto_allow"},
+                ],
+            },
+        )
+
+    def test_local_pending_uses_server_vocabulary(self, tmp_path):
+        """Local mode returns 'pending_approval' (not 'pending') like the server."""
+        gate = self._client(tmp_path)
+        r = gate.check("a", "email", "send", payload={"to": "x@y.com"})
+        assert r["decision"] == "pending_approval"
+
+    def test_wait_returns_approved_once_resolved(self, tmp_path):
+        gate = self._client(tmp_path)
+        r = gate.check("a", "email", "send", payload={"to": "x@y.com"})
+        assert gate.status(r["event_id"]) == "pending"
+        gate.approve(r["event_id"], "boss@co")
+        assert gate.wait_for_decision(r["event_id"], timeout=2) == "approved"
+
+    def test_wait_times_out_to_pending(self, tmp_path):
+        gate = self._client(tmp_path)
+        r = gate.check("a", "email", "send", payload={"to": "x@y.com"})
+        # Nobody approves -> must fail closed (return non-approved) quickly.
+        assert gate.wait_for_decision(r["event_id"], timeout=0.3, poll_interval=0.05) == "pending"
+
+    def test_gated_tool_fails_closed_without_approval(self, tmp_path):
+        from gate.integrations.langchain import GatedTool
+
+        class FakeTool:
+            name = "send"
+            description = ""
+            def __init__(self): self.ran = False
+            def run(self, *a, **k):
+                self.ran = True
+                return "SENT"
+
+        gate = self._client(tmp_path)
+        tool = FakeTool()
+        gt = GatedTool(tool=tool, agent_id="a", gate_client=gate,
+                       action_type="email", timeout=0.3)
+        out = gt.run("hi")
+        assert tool.ran is False
+        assert out == gt.block_message
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
